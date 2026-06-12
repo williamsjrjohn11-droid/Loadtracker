@@ -1303,7 +1303,78 @@ async function migratePhotosToIDB() {
 }
 
 // Convert any image (HEIC, PNG, JPEG, WEBP) to JPEG base64 for Claude API compatibility
+// Lazy-load the HEIC decoder library (only fetched when actually needed)
+let _heic2anyPromise = null;
+function loadHeic2any() {
+  if (window.heic2any) return Promise.resolve();
+  if (_heic2anyPromise) return _heic2anyPromise;
+  _heic2anyPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/heic2any/0.0.4/heic2any.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => { _heic2anyPromise = null; reject(new Error('Could not load HEIC converter — check internet connection')); };
+    document.head.appendChild(s);
+  });
+  return _heic2anyPromise;
+}
+
+function looksLikeHeic(file) {
+  const t = (file.type || '').toLowerCase();
+  const n = (file.name || '').toLowerCase();
+  return t.includes('heic') || t.includes('heif') || n.endsWith('.heic') || n.endsWith('.heif');
+}
+
+// Draw a decodable image source onto a canvas → JPEG base64 (with resize)
+function imageSourceToJpegB64(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onerror = () => reject(new Error('decode-failed'));
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let w = img.width, h = img.height;
+      const maxDim = 2000;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+        else { w = Math.round(w * maxDim / h); h = maxDim; }
+      }
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      resolve({ b64: canvas.toDataURL('image/jpeg', 0.92).split(',')[1], mt: 'image/jpeg' });
+    };
+    img.src = dataUrl;
+  });
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onerror = reject;
+    r.onload = (e) => resolve(e.target.result);
+    r.readAsDataURL(file);
+  });
+}
+
 async function fileToJpegB64(file) {
+  // 1) Try the browser's native decoder (works for JPG/PNG everywhere; HEIC on iPhones/Safari)
+  try {
+    const dataUrl = await fileToDataUrl(file);
+    return await imageSourceToJpegB64(dataUrl);
+  } catch(e) { /* fall through */ }
+
+  // 2) Native decode failed — if it's HEIC, use the heic2any library (desktop Chrome/Edge/Firefox)
+  if (looksLikeHeic(file)) {
+    await loadHeic2any();
+    const jpegBlob = await window.heic2any({ blob: file, toType: 'image/jpeg', quality: 0.92 });
+    const blob = Array.isArray(jpegBlob) ? jpegBlob[0] : jpegBlob;
+    const dataUrl = await fileToDataUrl(blob);
+    return await imageSourceToJpegB64(dataUrl);
+  }
+
+  // 3) Not HEIC and still undecodable — genuinely unsupported
+  throw new Error('Unsupported image format: ' + (file.name || 'unknown'));
+}
+
+async function _legacyFileToJpegB64_unused(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = reject;
@@ -1652,13 +1723,17 @@ async function processSingleSett(f) {
 
 async function processTickets() {
   if (!ticketFiles.length) return;
+  if (window._ticketsProcessing) { showGlobalAlert('Already scanning — please wait for the current batch to finish.', 'err'); return; }
+  window._ticketsProcessing = true;
+  // Snapshot the batch — files added mid-scan wait for the next run (fixes the 169% counter bug)
+  const batch = [...ticketFiles];
   // No settlement required — drivers get tickets daily, settlements weekly.
   // Tickets scanned early simply show "no match yet" and auto-match when the settlement arrives.
   const btn = document.getElementById('ticket-btn');
   btn.disabled = true;
   pendingTickets = []; // fresh staging area for this batch
   renderTicketReview();
-  const total = ticketFiles.length;
+  const total = batch.length;
   let procHTML = `
     <div style="margin-bottom:10px;">
       <div style="background:var(--surface);border-radius:20px;overflow:hidden;height:10px;width:100%;">
@@ -1667,13 +1742,13 @@ async function processTickets() {
       <div id="ticket-progress-txt" style="text-align:center;font-size:12px;color:var(--text3);margin-top:4px;">0% — 0 of ${total} tickets</div>
     </div>
     <div class="processing-list">`;
-  ticketFiles.forEach((f, i) => { procHTML += `<div class="proc-item" id="proc-${i}"><span class="proc-status">⏳</span><span>${f.name}</span></div>`; });
+  batch.forEach((f, i) => { procHTML += `<div class="proc-item" id="proc-${i}"><span class="proc-status">⏳</span><span>${f.name}</span></div>`; });
   procHTML += '</div>';
   setProc('ticket-proc', procHTML);
 
-  const totalTickets = ticketFiles.length;
-  for (let i = 0; i < ticketFiles.length; i++) {
-    const f = ticketFiles[i];
+  const totalTickets = batch.length;
+  for (let i = 0; i < batch.length; i++) {
+    const f = batch[i];
     const pct = Math.round((i / totalTickets) * 100);
     btn.innerHTML = `⏳ Processing ${i+1} of ${totalTickets} (${pct}%)`;
     // Update progress bar
@@ -1760,6 +1835,7 @@ async function processTickets() {
   const pbTxt2 = document.getElementById('ticket-progress-txt');
   if (pbTxt2) pbTxt2.textContent = `Scanned ${totalTickets} ticket(s) — review below before saving`;
   btn.innerHTML = '👇 Review tickets below';
+  window._ticketsProcessing = false;
   renderTicketReview();
 }
 
