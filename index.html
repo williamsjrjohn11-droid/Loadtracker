@@ -1360,9 +1360,26 @@ async function processSingleSett(f) {
         });
       }
     } catch(e) { console.log('Cloud check skipped'); }
+    // Re-match any previously scanned tickets against this new settlement
+    // (drivers scan tickets daily; the settlement arrives later — link them up now)
+    let rematched = 0;
+    DB.tickets = DB.tickets.map(t => {
+      const tn = String(t.ticket || '').replace(/\s/g, '');
+      const row = (s.rows || []).find(r => String(r.ticket || '').replace(/\s/g, '') == tn);
+      if (row && !t.matched) {
+        t.settlement_id = s.id; t.matched = true;
+        t.settled_tons = row.tons; t.settled_rate = row.rate; t.settled_total = row.total; t.settled_fsc = row.fsc;
+        t.tons_diff = Math.abs(parseFloat(t.tons || 0) - parseFloat(row.tons || 0));
+        t.has_discrepancy = t.tons_diff > 0.1;
+        row.ticket_uploaded = true;
+        rematched++;
+      }
+      return t;
+    });
     DB.settlements = DB.settlements.filter(x => x.id !== s.id);
     DB.settlements.push(s);
     save(); renderAll(); populateSel();
+    if (rematched > 0) showGlobalAlert(`🔗 ${rematched} previously scanned ticket(s) auto-matched to this settlement!`, 'ok');
     // Push to cloud for cross-device sync
     setProc('sett-proc', `<div class="alert alert-ok">✅ Settlement saved! Syncing to cloud...</div>`);
 
@@ -1413,7 +1430,8 @@ async function processSingleSett(f) {
 
 async function processTickets() {
   if (!ticketFiles.length) return;
-  if (!DB.settlements.length) { setProc('ticket-proc', '<div class="alert alert-err">Upload at least one settlement first before adding tickets.</div>'); return; }
+  // No settlement required — drivers get tickets daily, settlements weekly.
+  // Tickets scanned early simply show "no match yet" and auto-match when the settlement arrives.
   const btn = document.getElementById('ticket-btn');
   btn.disabled = true;
   pendingTickets = []; // fresh staging area for this batch
