@@ -881,7 +881,10 @@ async function pushToCloud(settlement, tickets) {
     }
     for (const ticket of tickets) {
       const tNum = String(ticket.ticket||'');
-      if (!cloudTicketNums.has(tNum)) {
+      const hasSyncablePhoto = ticket.photo_url && !ticket.photo_url.startsWith('local:');
+      // Push if new to cloud, OR if it carries a Drive photo URL / match data the cloud row may lack.
+      // (The Apps Script saveTicket UPDATES existing rows, so re-pushing is safe — no duplicates.)
+      if (!cloudTicketNums.has(tNum) || hasSyncablePhoto || ticket.matched) {
         // Don't push "local:" photo refs to cloud — they only resolve on this device.
         // Drive URLs sync normally. The cloud-merge keeps local refs intact on this device.
         const cloudTicket = (ticket.photo_url && ticket.photo_url.startsWith('local:'))
