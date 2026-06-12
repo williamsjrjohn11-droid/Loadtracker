@@ -656,6 +656,43 @@ async function uploadPhotoToDrive(file, ticketNum, convertedB64) {
   return `https://drive.google.com/file/d/${data.id}/view`;
 }
 
+// ─── SETTLEMENT DOC → DRIVE ───────────────────────────────────
+// Uploads the original settlement PDF/photo to the Drive folder so the
+// 📄 View button works on every device. Named Settlement_{id}_... so the
+// Relink feature can recover the link from any signed-in device.
+async function uploadSettDocToDrive(b64, mime, settId, company, checkDate) {
+  if (!gAccessToken) return null;
+  try {
+    const bytes = atob(b64);
+    const arr = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+    const blob = new Blob([arr], { type: mime || 'application/pdf' });
+    const ext = (mime || '').includes('pdf') ? 'pdf' : 'jpg';
+    const safeCompany = String(company || 'settlement').replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 30);
+    const safeDate = String(checkDate || '').replace(/[^0-9.\-]/g, '');
+    const metadata = {
+      name: `Settlement_${settId}_${safeDate}_${safeCompany}.${ext}`,
+      parents: [DRIVE_FOLDER_ID]
+    };
+    const form = new FormData();
+    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+    form.append('file', blob);
+    const resp = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + gAccessToken },
+      body: form
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    await fetch(`https://www.googleapis.com/drive/v3/files/${data.id}/permissions`, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + gAccessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'reader', type: 'anyone' })
+    });
+    return `https://drive.google.com/file/d/${data.id}/view`;
+  } catch(e) { console.warn('Settlement doc Drive upload failed:', e); return null; }
+}
+
 // ─── RELINK DRIVE PHOTOS ──────────────────────────────────────
 // Scans the LoadTracker Drive folder, matches photos to tickets by the
 // Ticket_{number}_ filename pattern, and restores missing photo_url links.
@@ -679,9 +716,12 @@ async function relinkDrivePhotos() {
 
     // Build ticket-number → file map from Ticket_{number}_ filenames (newest wins on dup names)
     const byTicket = {};
+    const bySett = {};
     for (const f of files) {
       const m = (f.name || '').match(/^Ticket_(.+?)_\d{4}-\d{2}-\d{2}/);
-      if (m && m[1]) byTicket[String(m[1]).replace(/\s/g,'')] = f.id;
+      if (m && m[1]) { byTicket[String(m[1]).replace(/\s/g,'')] = f.id; continue; }
+      const ms = (f.name || '').match(/^Settlement_(s_[^_]+(?:_[a-z0-9]{4})?)_/);
+      if (ms && ms[1]) bySett[ms[1]] = f.id;
     }
 
     let linked = 0;
@@ -693,6 +733,14 @@ async function relinkDrivePhotos() {
       if (fileId && (!t.photo_url || t.photo_url.startsWith('local:'))) {
         t.photo_url = `https://drive.google.com/file/d/${fileId}/view`;
         t.has_local_photo = false;
+        linked++;
+      }
+    }
+    // Also relink settlement documents by Settlement_{id}_ filenames
+    for (const s of DB.settlements) {
+      const fileId = bySett[s.id];
+      if (fileId && !s.doc_url) {
+        s.doc_url = `https://drive.google.com/file/d/${fileId}/view`;
         linked++;
       }
     }
@@ -851,6 +899,17 @@ async function syncLoad() {
       // Keep any local settlements not yet in cloud
       const cloudIds = new Set(data.settlements.map(s => s.id));
       const localOnly = DB.settlements.filter(s => !cloudIds.has(s.id));
+      // Rescue doc links: the cloud Sheet's columns don't carry doc_url/doc_ref,
+      // so copy them over from the matching local settlement before replacing
+      const localById = {};
+      DB.settlements.forEach(s => { localById[s.id] = s; });
+      data.settlements.forEach(cs => {
+        const loc = localById[cs.id];
+        if (loc) {
+          if (loc.doc_url && !cs.doc_url) cs.doc_url = loc.doc_url;
+          if (loc.doc_ref && !cs.doc_ref) { cs.doc_ref = loc.doc_ref; cs.doc_mime = loc.doc_mime; }
+        }
+      });
       DB.settlements = [...data.settlements, ...localOnly];
     }
     
@@ -1190,13 +1249,15 @@ async function viewPhoto(photoUrl, ticketKey) {
     window.open(photoUrl, '_blank');
   }
 }
-// Open a settlement's original document (PDF or photo) from IndexedDB
+// Open a settlement's original document — Drive URL (works everywhere) preferred, local fallback
 async function viewSettDoc(settId) {
   const s = DB.settlements.find(x => x.id === settId);
-  if (!s || !s.doc_ref) { showGlobalAlert('Original document not available on this device (it was uploaded from another device).', 'err'); return; }
+  if (!s) return;
+  if (s.doc_url) { window.open(s.doc_url, '_blank'); return; }
+  if (!s.doc_ref) { showGlobalAlert('Original document not available on this device. Tip: tap 🔄 Relink photos (Dashboard) to recover it from Drive.', 'err'); return; }
   const key = s.doc_ref.startsWith('local:') ? s.doc_ref.slice(6) : s.doc_ref;
   const b64 = await getPhotoLocal(key);
-  if (!b64) { showGlobalAlert('Document not found on this device.', 'err'); return; }
+  if (!b64) { showGlobalAlert('Document not found on this device. Tip: tap 🔄 Relink photos (Dashboard) to recover it from Drive.', 'err'); return; }
   const bytes = atob(b64);
   const arr = new Uint8Array(bytes.length);
   for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
@@ -1393,6 +1454,9 @@ async function readSingleSett(f) {
       const stored = await savePhotoLocal(docKey, b64);
       if (stored) { s.doc_ref = 'local:' + docKey; s.doc_mime = mt.includes('pdf') ? 'application/pdf' : mt; }
     } catch(e) {}
+    // Also upload to Drive (if signed in) so it's viewable on every device
+    const driveDocUrl = await uploadSettDocToDrive(b64, mt.includes('pdf') ? 'application/pdf' : mt, s.id, s.company, s.check_date);
+    if (driveDocUrl) s.doc_url = driveDocUrl;
     return s;
   } catch(e) {
     showGlobalAlert('❌ Failed to read ' + f.name + ': ' + e.message, 'err');
@@ -1450,6 +1514,9 @@ async function processSingleSett(f) {
       const stored = await savePhotoLocal(docKey, b64);
       if (stored) { s.doc_ref = 'local:' + docKey; s.doc_mime = mt.includes('pdf') ? 'application/pdf' : mt; }
     } catch(e) {}
+    // Also upload to Drive (if signed in) so it's viewable on every device
+    const driveDocUrl = await uploadSettDocToDrive(b64, mt.includes('pdf') ? 'application/pdf' : mt, s.id, s.company, s.check_date);
+    if (driveDocUrl) s.doc_url = driveDocUrl;
     DB.tickets = DB.tickets.map(t => {
       const tn = String(t.ticket || '').replace(/\s/g, '');
       const row = (s.rows || []).find(r => String(r.ticket || '').replace(/\s/g, '') == tn);
@@ -1916,7 +1983,7 @@ function renderSetts() {
     return `<div class="sett-card">
       <div class="sett-header">
         <div><div class="sett-name">${s.company||'Settlement'} — ${s.check_date||'?'}</div><div class="sett-meta">Truck: ${s.truck||'—'} &nbsp;·&nbsp; ${loads} loads &nbsp;·&nbsp; ${up}/${loads} tickets<div class="prog-track" style="width:160px;"><div class="prog-fill" style="width:${pct}%"></div></div></div></div>
-        <div style="text-align:right;flex-shrink:0;margin-left:12px;"><div class="sett-net">${fmt$(s.net_total)}</div><div class="sett-netlabel">net payout</div><div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px;">${s.doc_ref ? `<button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="viewSettDoc('${s.id}')">📄 View</button>` : ''}<button class="btn btn-sm btn-red" onclick="delS('${s.id}')">🗑 Delete</button></div></div>
+        <div style="text-align:right;flex-shrink:0;margin-left:12px;"><div class="sett-net">${fmt$(s.net_total)}</div><div class="sett-netlabel">net payout</div><div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px;">${(s.doc_url || s.doc_ref) ? `<button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="viewSettDoc('${s.id}')">📄 View</button>` : ''}<button class="btn btn-sm btn-red" onclick="delS('${s.id}')">🗑 Delete</button></div></div>
       </div>
       <div class="table-wrap"><table>
         <thead><tr><th>Ticket #</th><th>Date</th><th>Route</th><th>Tons</th><th>Rate</th><th>Total</th><th>FSC</th><th>Ticket</th></tr></thead>
