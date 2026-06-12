@@ -712,6 +712,56 @@ async function pushAllToCloud() {
   showGlobalAlert(`✅ Pushed ${pushed} new + ${updated} updated to cloud`, 'ok');
 }
 
+// ─── UNIVERSAL RE-MATCH ───────────────────────────────────────
+// Runs after any data change (load, cloud pull, saves). Catches tickets and
+// settlements that met each other in ANY order or via cloud sync, and merges
+// duplicate records (scanned ticket + settlement-created placeholder).
+function rematchAll() {
+  let changed = 0;
+  // Pass 1: match unmatched tickets against all settlement rows
+  for (const t of DB.tickets) {
+    if (t.matched) continue;
+    const tn = String(t.ticket || '').replace(/\s/g, '');
+    if (!tn) continue;
+    for (const s of DB.settlements) {
+      const row = (s.rows || []).find(r => String(r.ticket || '').replace(/\s/g, '') == tn);
+      if (row) {
+        t.settlement_id = s.id; t.matched = true;
+        t.settled_tons = row.tons; t.settled_rate = row.rate; t.settled_total = row.total; t.settled_fsc = row.fsc;
+        t.tons_diff = Math.abs(parseFloat(t.tons || 0) - parseFloat(row.tons || 0));
+        t.has_discrepancy = t.tons_diff > 0.1;
+        row.ticket_uploaded = true;
+        changed++;
+        break;
+      }
+    }
+  }
+  // Pass 2: merge duplicate ticket records sharing the same ticket number.
+  // Prefer the scanned record (has photo / not settlement-sourced); copy its photo to the survivor.
+  const byNum = {};
+  const deduped = [];
+  for (const t of DB.tickets) {
+    const tn = String(t.ticket || '').replace(/\s/g, '');
+    if (!tn) { deduped.push(t); continue; }
+    if (!byNum[tn]) { byNum[tn] = t; deduped.push(t); continue; }
+    const kept = byNum[tn];
+    // Decide which record wins: photo > scanned source > existing
+    const newWins = (t.photo_url && !kept.photo_url) || (kept.source === 'settlement' && t.source !== 'settlement');
+    if (newWins) {
+      // copy any useful fields from the loser, replace in array
+      if (!t.photo_url && kept.photo_url) t.photo_url = kept.photo_url;
+      const idx = deduped.indexOf(kept);
+      if (idx >= 0) deduped[idx] = t;
+      byNum[tn] = t;
+    } else {
+      if (t.photo_url && !kept.photo_url) { kept.photo_url = t.photo_url; kept.has_local_photo = t.has_local_photo; }
+    }
+    changed++;
+  }
+  if (deduped.length !== DB.tickets.length) DB.tickets = deduped;
+  return changed;
+}
+
 async function syncLoad() {
   try {
     setSyncStatus('Loading from cloud...', true);
@@ -758,6 +808,9 @@ async function syncLoad() {
       DB.tickets = merged;
     }
     
+    // Re-match everything now that local + cloud data are combined
+    const rematchedCount = rematchAll();
+    if (rematchedCount > 0) showGlobalAlert(`🔗 ${rematchedCount} ticket(s) matched/merged after sync!`, 'ok');
     save();
     // Auto-repair: rebuild rows for any settlements that came back without them
     let repaired = 0;
@@ -866,6 +919,8 @@ function toggleApiSection() {
 
 function load() {
   try { const d = localStorage.getItem(KEY); if (d) DB = JSON.parse(d); } catch(e) {}
+  // Self-heal: match/merge anything that should be linked but isn't
+  try { if (rematchAll() > 0) localStorage.setItem(KEY, JSON.stringify(DB)); } catch(e) {}
   const ak = localStorage.getItem(AKEY);
   if (ak) {
     document.getElementById('api-key-input').value = ak;
@@ -1614,6 +1669,7 @@ async function confirmSaveTickets() {
 
   DB.tickets = DB.tickets.filter(t => !results.find(r => String(r.ticket||'') == String(t.ticket||'')));
   DB.tickets.push(...results);
+  rematchAll(); // also merges scanned tickets with settlement-created placeholders
   save(); renderAll();
   for (const t of results) { if (!t.error) await pushToCloud({id:'skip'}, [t]); }
 
