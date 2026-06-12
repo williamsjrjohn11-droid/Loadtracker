@@ -220,7 +220,10 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
         <button id="google-action-btn" class="btn btn-sm" style="font-size:12px;" onclick="toggleGoogleAuth()">Sign in with Google</button>
       </div>
     </div>
-    <!-- Mobile: Direct Drive folder link + relink -->
+    <!-- Mobile: Google sign-in + Drive folder link + relink -->
+    <button class="mobile-only" id="google-mobile-btn" onclick="toggleGoogleAuth()" style="display:flex;width:100%;align-items:center;justify-content:center;gap:8px;background:#4285F4;color:#fff;border:none;border-radius:8px;padding:11px 14px;margin-bottom:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Barlow',sans-serif;">
+      🔗 Sign in with Google (for photo sync)
+    </button>
     <div class="mobile-only" style="display:flex;gap:8px;margin-bottom:12px;">
       <a href="https://drive.google.com/drive/folders/1ISVKVnQRylbkZ5-YCAWXav0A0Lt89p4E" target="_blank" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:11px 8px;font-size:12px;color:var(--blue);text-decoration:none;font-weight:500;">
         📷 Drive photos
@@ -718,6 +721,20 @@ function updateGoogleStatusBar() {
   const bar = document.getElementById('google-status-bar');
   const text = document.getElementById('google-status-text');
   const btn = document.getElementById('google-action-btn');
+  const mob = document.getElementById('google-mobile-btn');
+  if (mob) {
+    if (gAccessToken) {
+      mob.innerHTML = '✅ Google connected — photos save to Drive (tap to sign out)';
+      mob.style.background = 'var(--surface)';
+      mob.style.color = 'var(--green)';
+      mob.style.border = '1px solid var(--border)';
+    } else {
+      mob.innerHTML = '🔗 Sign in with Google (for photo sync)';
+      mob.style.background = '#4285F4';
+      mob.style.color = '#fff';
+      mob.style.border = 'none';
+    }
+  }
   if (!bar) return;
   if (gAccessToken) {
     text.innerHTML = '✅ Google connected — photos save to Drive';
