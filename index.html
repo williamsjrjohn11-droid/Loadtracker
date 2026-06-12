@@ -896,9 +896,13 @@ async function syncLoad() {
     
     if (data.settlements && data.settlements.length > 0) {
       // Replace local with cloud data — cloud is source of truth
-      // Keep any local settlements not yet in cloud
+      // Keep any local settlements not yet in cloud — BUT only if they aren't
+      // financially identical to a cloud settlement (prevents deleted settlements
+      // held on other devices from "resurrecting" as duplicates).
+      const settFP = (s) => [parseFloat(s.subtotal||0).toFixed(2), parseFloat(s.fsc_total||0).toFixed(2), parseFloat(s.broker_fee_amt||0).toFixed(2), parseFloat(s.net_total||0).toFixed(2)].join('_');
       const cloudIds = new Set(data.settlements.map(s => s.id));
-      const localOnly = DB.settlements.filter(s => !cloudIds.has(s.id));
+      const cloudFPs = new Set(data.settlements.map(settFP));
+      const localOnly = DB.settlements.filter(s => !cloudIds.has(s.id) && !cloudFPs.has(settFP(s)));
       // Rescue doc links: the cloud Sheet's columns don't carry doc_url/doc_ref,
       // so copy them over from the matching local settlement before replacing
       const localById = {};
@@ -911,6 +915,21 @@ async function syncLoad() {
         }
       });
       DB.settlements = [...data.settlements, ...localOnly];
+      // Also dedupe within the combined list itself (oldest survives, doc links merge)
+      const seenFP = {};
+      DB.settlements = DB.settlements.filter(s => {
+        const fp = settFP(s);
+        if (seenFP[fp]) {
+          const kept = seenFP[fp];
+          if (s.doc_url && !kept.doc_url) kept.doc_url = s.doc_url;
+          if (s.doc_ref && !kept.doc_ref) { kept.doc_ref = s.doc_ref; kept.doc_mime = s.doc_mime; }
+          // Re-point any tickets at the surviving settlement
+          DB.tickets.forEach(t => { if (t.settlement_id === s.id) t.settlement_id = kept.id; });
+          return false;
+        }
+        seenFP[fp] = s;
+        return true;
+      });
     }
     
     if (data.tickets && data.tickets.length > 0) {
