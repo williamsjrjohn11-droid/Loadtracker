@@ -326,7 +326,7 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
     <!-- API KEY -->
     <div class="api-section">
       <div class="api-title" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;" onclick="toggleApiSection()">
-        <span>🔑 Anthropic API Key</span>
+        <span>🔑 API Key (optional backup — scans use the server by default)</span>
         <span id="api-toggle-label" style="font-size:11px;font-weight:400;opacity:.7;">▼ show</span>
       </div>
       <div id="api-body" style="display:none;">
@@ -382,6 +382,7 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
       </button>
       <div class="file-queue" id="ticket-queue"></div>
       <div id="ticket-proc"></div>
+      <div id="ticket-review" style="display:none;"></div>
       <button class="btn btn-green btn-full" id="ticket-btn" onclick="processTickets()" style="margin-top:12px;" disabled>
         🚀 Read & Save Tickets
       </button>
@@ -435,7 +436,7 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
   <div class="panel" id="panel-help">
     <div class="card">
       <div class="card-title">How to use Load Tracker</div>
-      <div class="how-step"><div class="how-num">1</div><div class="how-body"><div class="how-title">Enter your API key</div><div class="how-desc">Go to the ➕ Upload tab and paste your Anthropic API key. It saves in your browser and never leaves your device except to talk to Anthropic's servers.</div></div></div>
+      <div class="how-step"><div class="how-num">1</div><div class="how-body"><div class="how-title">No setup needed</div><div class="how-desc">Scanning runs through the app's own server — you don't need an API key. (Owner/advanced: a personal Anthropic key can be saved in the Upload tab as a backup.)</div></div></div>
       <div class="how-step"><div class="how-num">2</div><div class="how-body"><div class="how-title">Drag in your settlement PDF</div><div class="how-desc">Drop your settlement PDF into the upload box. The AI reads all the loads, rates, tons, FSC, and totals automatically.</div></div></div>
       <div class="how-step"><div class="how-num">3</div><div class="how-body"><div class="how-title">Drag in your ticket photos</div><div class="how-desc">Drop your load ticket photos (JPG, PNG) into the ticket box. The AI reads each one and matches it to the settlement automatically.</div></div></div>
       <div class="how-step"><div class="how-num">4</div><div class="how-body"><div class="how-title">Check your dashboard</div><div class="how-desc">Your dashboard shows YTD earnings, total loads, tons, and any discrepancies between your tickets and what you were paid.</div></div></div>
@@ -857,7 +858,12 @@ async function pushToCloud(settlement, tickets) {
     for (const ticket of tickets) {
       const tNum = String(ticket.ticket||'');
       if (!cloudTicketNums.has(tNum)) {
-        await gasPost({action: 'saveTicket', ticket});
+        // Don't push "local:" photo refs to cloud — they only resolve on this device.
+        // Drive URLs sync normally. The cloud-merge keeps local refs intact on this device.
+        const cloudTicket = (ticket.photo_url && ticket.photo_url.startsWith('local:'))
+          ? {...ticket, photo_url: null}
+          : ticket;
+        await gasPost({action: 'saveTicket', ticket: cloudTicket});
         cloudTicketNums.add(tNum);
       }
     }
@@ -899,13 +905,29 @@ function load() {
   }
   setSync('Loaded — ' + DB.settlements.length + ' settlement(s)');
   renderAll(); populateSel();
+  // Migrate any legacy data-URL photos out of localStorage into IndexedDB (frees up the 5MB cap)
+  migratePhotosToIDB().then(() => renderAll()).catch(() => {});
 }
 
 function save() {
   hasUnsyncedData = true;
   showUnsyncedWarning();
-  localStorage.setItem(KEY, JSON.stringify(DB));
-  setSync(DB.settlements.length + ' settlement(s), ' + DB.tickets.length + ' ticket(s) saved');
+  try {
+    localStorage.setItem(KEY, JSON.stringify(DB));
+    setSync(DB.settlements.length + ' settlement(s), ' + DB.tickets.length + ' ticket(s) saved');
+  } catch(e) {
+    // QuotaExceededError — strip any legacy giant data-URLs and retry once
+    let stripped = 0;
+    DB.tickets.forEach(t => { if (t.photo_url && t.photo_url.startsWith('data:')) { t.photo_url = null; stripped++; } });
+    try {
+      localStorage.setItem(KEY, JSON.stringify(DB));
+      setSync('Saved (recovered from storage limit)');
+      if (stripped) showGlobalAlert(`⚠️ Storage was full — ${stripped} old embedded photo(s) were removed to save your data. New photos are stored safely in IndexedDB.`, 'err');
+    } catch(e2) {
+      setSync('⚠️ SAVE FAILED — storage full!');
+      showGlobalAlert('🚨 Could not save — device storage is full! Push your data to cloud NOW so nothing is lost.', 'err');
+    }
+  }
 }
 
 function saveApiKey() {
@@ -999,6 +1021,85 @@ async function fileToB64(file) {
   return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(file); });
 }
 
+// ─── INDEXEDDB PHOTO STORE ────────────────────────────────────
+// Photos are stored in IndexedDB (gigabytes of space) instead of localStorage (5MB cap).
+// localStorage only keeps a tiny "local:TICKETNUM" reference.
+let _idb = null;
+function openPhotoDB() {
+  return new Promise((resolve, reject) => {
+    if (_idb) return resolve(_idb);
+    const req = indexedDB.open('loadtracker_photos', 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('photos')) db.createObjectStore('photos');
+    };
+    req.onsuccess = (e) => { _idb = e.target.result; resolve(_idb); };
+    req.onerror = () => reject(req.error);
+  });
+}
+async function savePhotoLocal(ticketKey, b64jpeg) {
+  try {
+    const db = await openPhotoDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('photos', 'readwrite');
+      tx.objectStore('photos').put(b64jpeg, String(ticketKey));
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch(e) { console.warn('IDB save failed:', e); return false; }
+}
+async function getPhotoLocal(ticketKey) {
+  try {
+    const db = await openPhotoDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('photos', 'readonly');
+      const req = tx.objectStore('photos').get(String(ticketKey));
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch(e) { return null; }
+}
+async function deletePhotoLocal(ticketKey) {
+  try {
+    const db = await openPhotoDB();
+    const tx = db.transaction('photos', 'readwrite');
+    tx.objectStore('photos').delete(String(ticketKey));
+  } catch(e) {}
+}
+// Open a photo: Drive URLs open directly; "local:" refs are pulled from IndexedDB
+async function viewPhoto(photoUrl, ticketKey) {
+  if (!photoUrl) return;
+  if (photoUrl.startsWith('local:')) {
+    const b64 = await getPhotoLocal(photoUrl.slice(6) || ticketKey);
+    if (!b64) { showGlobalAlert('Photo not found on this device (it may have been scanned on another device).', 'err'); return; }
+    // Convert base64 → Blob → object URL (data URLs are blocked in new tabs by modern browsers)
+    const bytes = atob(b64);
+    const arr = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+    const blob = new Blob([arr], {type: 'image/jpeg'});
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } else {
+    window.open(photoUrl, '_blank');
+  }
+}
+// One-time migration: move any old giant data-URL photos out of localStorage into IndexedDB
+async function migratePhotosToIDB() {
+  let moved = 0;
+  for (const t of DB.tickets) {
+    if (t.photo_url && t.photo_url.startsWith('data:')) {
+      const key = String(t.ticket || t.file || Math.random());
+      const b64 = t.photo_url.split(',')[1];
+      if (b64 && await savePhotoLocal(key, b64)) {
+        t.photo_url = 'local:' + key;
+        moved++;
+      }
+    }
+  }
+  if (moved > 0) { save(); console.log(`Migrated ${moved} photo(s) to IndexedDB`); }
+}
+
 // Convert any image (HEIC, PNG, JPEG, WEBP) to JPEG base64 for Claude API compatibility
 async function fileToJpegB64(file) {
   return new Promise((resolve, reject) => {
@@ -1035,21 +1136,44 @@ async function fileToJpegB64(file) {
 }
 
 async function callClaude(messages, maxTokens) {
-  const key = getApiKey();
-  if (!key) throw new Error('No API key — enter your Anthropic API key in the Upload tab first.');
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-    body: JSON.stringify({ model: 'claude-opus-4-5', max_tokens: maxTokens || 2000, messages })
-  });
-  if (!resp.ok) { const e = await resp.json(); throw new Error(e.error?.message || 'API error ' + resp.status); }
-  const d = await resp.json();
-  return d.content.map(c => c.text || '').join('').replace(/```json|```/g, '').trim();
+  // 1) Try the Apps Script proxy first — API key lives server-side, drivers need no setup.
+  //    POST as text/plain avoids CORS preflight (Apps Script requirement).
+  try {
+    const resp = await fetch(SYNC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ action: 'claude', max_tokens: maxTokens || 2000, messages })
+    });
+    if (resp.ok) {
+      const d = await resp.json();
+      if (d && d.content) {
+        return d.content.map(c => c.text || '').join('').replace(/```json|```/g, '').trim();
+      }
+      if (d && d.error) throw new Error('PROXY_CONFIG: ' + (d.error.message || d.error));
+    }
+    throw new Error('PROXY_UNAVAILABLE');
+  } catch (proxyErr) {
+    // 2) Fallback: direct call with a locally saved key (owner/dev use)
+    const key = getApiKey();
+    if (!key) {
+      if (String(proxyErr.message||'').startsWith('PROXY_CONFIG')) throw new Error('Server key issue: ' + proxyErr.message.replace('PROXY_CONFIG: ','') + ' — ask the app owner to check the Apps Script API key.');
+      throw new Error('Could not reach the scan server. Check your internet connection, or enter an API key in the Upload tab as backup.');
+    }
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model: 'claude-opus-4-5', max_tokens: maxTokens || 2000, messages })
+    });
+    if (!resp.ok) { const e = await resp.json(); throw new Error(e.error?.message || 'API error ' + resp.status); }
+    const d = await resp.json();
+    return d.content.map(c => c.text || '').join('').replace(/```json|```/g, '').trim();
+  }
 }
 
 function setProc(id, html) { document.getElementById(id).innerHTML = html; }
 
 let pendingSettlements = []; // staged settlements waiting for review
+let pendingTickets = []; // staged tickets waiting for review/confirm
 
 async function processSett() {
   if (!settFiles.length) return;
@@ -1132,8 +1256,6 @@ function cancelSettlementReview() {
   showGlobalAlert('Settlement upload cancelled.', 'ok');
 }
 async function readSingleSett(f) {
-  const key = getApiKey();
-  if (!key) { showGlobalAlert('Enter your API key first.', 'err'); return null; }
   try {
     const b64 = await fileToB64(f);
     const mt = f.type || 'application/pdf';
@@ -1183,8 +1305,6 @@ async function saveSingleSett(s) {
 }
 
 async function processSingleSett(f) {
-  const key = getApiKey();
-  if (!key) { showGlobalAlert('Enter your API key first in the Upload tab.', 'err'); switchTab('upload'); return; }
   const btn = document.getElementById('sett-btn');
   setProc('sett-proc', `<div class="alert alert-info">🤖 AI is reading ${f.name}...</div>`);
   try {
@@ -1295,12 +1415,11 @@ async function processSingleSett(f) {
 
 async function processTickets() {
   if (!ticketFiles.length) return;
-  const key = getApiKey();
-  if (!key) { showGlobalAlert('Enter your API key first.', 'err'); return; }
   if (!DB.settlements.length) { setProc('ticket-proc', '<div class="alert alert-err">Upload at least one settlement first before adding tickets.</div>'); return; }
   const btn = document.getElementById('ticket-btn');
   btn.disabled = true;
-  const results = [];
+  pendingTickets = []; // fresh staging area for this batch
+  renderTicketReview();
   const total = ticketFiles.length;
   let procHTML = `
     <div style="margin-bottom:10px;">
@@ -1345,11 +1464,11 @@ async function processTickets() {
       t.file = f.name;
       let photoUrl = null;
 
-      // Always generate a local data-URL so photo icon works even without Google Drive
-      let localDataUrl = null;
+      // Convert to JPEG once — used for both local IndexedDB storage and display
+      let jpegB64 = null;
       try {
         const jpegResult = await fileToJpegB64(f);
-        localDataUrl = 'data:image/jpeg;base64,' + jpegResult.b64;
+        jpegB64 = jpegResult.b64;
       } catch(e) {}
 
       // Try to upload to Google Drive if signed in
@@ -1362,66 +1481,163 @@ async function processTickets() {
         }
       }
 
-      // Use Drive URL if available, otherwise fall back to local data URL
-      const finalPhotoUrl = photoUrl || localDataUrl;
+      // If no Drive URL, store the photo in IndexedDB (NOT localStorage — avoids 5MB cap)
+      let finalPhotoUrl = photoUrl;
+      if (!finalPhotoUrl && jpegB64) {
+        const photoKey = String(t.ticket || f.name || Date.now());
+        const ok = await savePhotoLocal(photoKey, jpegB64);
+        if (ok) finalPhotoUrl = 'local:' + photoKey;
+      }
 
-      // Show 📷 icon in processing list always (Drive URL or local)
+      // Show 📷 icon in processing list (Drive URL or local IDB ref)
       if (finalPhotoUrl && el) {
-        el.innerHTML += ` <a href="${finalPhotoUrl}" target="_blank" style="font-size:13px;text-decoration:none;" title="View photo">📷</a>`;
+        el.innerHTML += ` <a href="#" onclick="viewPhoto('${finalPhotoUrl}');return false;" style="font-size:13px;text-decoration:none;" title="View photo">📷</a>`;
         if (photoUrl) el.innerHTML += ` <span style="font-size:10px;color:var(--blue);">☁ Drive</span>`;
       }
 
-      const dupTicket = DB.tickets.find(x => String(x.ticket||'').replace(/\s/g,'') === String(t.ticket||'').replace(/\s/g,''));
-      if (dupTicket) {
-        if (finalPhotoUrl) {
-          dupTicket.photo_url = finalPhotoUrl;
-          dupTicket.has_local_photo = !photoUrl; // flag if it's local only
-          save(); renderTickets();
-          if (photoUrl) gasPost({action: 'saveTicket', ticket: dupTicket}).catch(() => {});
-        }
-        results.push({...dupTicket, file: f.name, duplicate: true});
-        if (el) { el.querySelector('.proc-status').textContent = finalPhotoUrl ? '📷' : '⚠️'; el.style.borderColor = 'var(--amber)'; el.innerHTML += ` <span style="color:var(--amber);font-size:11px;">Already exists${finalPhotoUrl ? ' — photo updated!' : ' — skipped'}</span>`; }
-        continue;
-      }
+      // Stage for review — check duplicate + match preview, but DON'T save yet
       if (finalPhotoUrl) { t.photo_url = finalPhotoUrl; t.has_local_photo = !photoUrl; }
-      const tn = String(t.ticket || '').replace(/\s/g, '');
-      let matchedRow = null, matchedSettId = null;
-      for (const s of DB.settlements) {
-        const row = (s.rows || []).find(r => String(r.ticket || '').replace(/\s/g, '') == tn);
-        if (row) { matchedRow = row; matchedSettId = s.id; break; }
-      }
-      // Mark ticket_uploaded=true as soon as photo is scanned (regardless of Drive)
-      if (matchedRow) { t.settlement_id = matchedSettId; t.matched = true; t.settled_tons = matchedRow.tons; t.settled_rate = matchedRow.rate; t.settled_total = matchedRow.total; t.settled_fsc = matchedRow.fsc; t.tons_diff = Math.abs(parseFloat(t.tons || 0) - parseFloat(matchedRow.tons || 0)); t.has_discrepancy = t.tons_diff > 0.1; matchedRow.ticket_uploaded = true; }
-      else { t.matched = false; t.has_discrepancy = false; t.settlement_id = null; }
-      results.push(t);
+      t._dup = !!DB.tickets.find(x => String(x.ticket||'').replace(/\s/g,'') === String(t.ticket||'').replace(/\s/g,''));
+      const preview = previewMatch(t.ticket);
+      t._matchPreview = preview;
+      pendingTickets.push(t);
       if (el) {
         const ticketLabel = t.ticket && t.ticket !== 'unknown' ? ` <span style="font-size:11px;color:var(--text2);">#${t.ticket}</span>` : '';
-        const matchLabel = t.has_discrepancy ? ' <span style="font-size:11px;color:var(--red);">⚠ tons mismatch</span>' : t.matched ? ' <span style="font-size:11px;color:var(--green);">matched ✓</span>' : ' <span style="font-size:11px;color:var(--amber);">not settled yet</span>';
-        el.querySelector('.proc-status').textContent = t.has_discrepancy ? '⚠️' : t.matched ? '✅' : '📋';
-        el.style.borderColor = t.has_discrepancy ? 'var(--red)' : t.matched ? 'var(--green)' : 'var(--border)';
-        el.innerHTML += ticketLabel + matchLabel;
+        let statusIcon, statusLabel, borderColor;
+        if (t._dup) { statusIcon = '⚠️'; statusLabel = ' <span style="font-size:11px;color:var(--amber);">already exists</span>'; borderColor = 'var(--amber)'; }
+        else if (preview.matched) { statusIcon = '✅'; statusLabel = ' <span style="font-size:11px;color:var(--green);">will match ✓</span>'; borderColor = 'var(--green)'; }
+        else { statusIcon = '📋'; statusLabel = ' <span style="font-size:11px;color:var(--amber);">no settlement match</span>'; borderColor = 'var(--border)'; }
+        el.querySelector('.proc-status').textContent = statusIcon;
+        el.style.borderColor = borderColor;
+        el.innerHTML += ticketLabel + statusLabel;
       }
     } catch(e) {
-      results.push({ file: f.name, ticket: 'unknown', error: e.message, settlement_id: null, matched: false, has_discrepancy: false });
-      if (el) { el.querySelector('.proc-status').textContent = '❌'; el.innerHTML += ` <span style="color:var(--red);font-size:11px;">${e.message}</span>`; }
+      pendingTickets.push({ file: f.name, ticket: '', date: '', pickup: '', deliver: '', tons: '', _scanError: e.message, _dup: false, _matchPreview: {matched:false} });
+      if (el) { el.querySelector('.proc-status').textContent = '❌'; el.innerHTML += ` <span style="color:var(--red);font-size:11px;">${e.message} — you can enter it manually below</span>`; }
     }
+  }
+
+  const pbEl2 = document.getElementById('ticket-progress-bar');
+  if (pbEl2) pbEl2.style.width = '100%';
+  const pbTxt2 = document.getElementById('ticket-progress-txt');
+  if (pbTxt2) pbTxt2.textContent = `Scanned ${totalTickets} ticket(s) — review below before saving`;
+  btn.innerHTML = '👇 Review tickets below';
+  renderTicketReview();
+}
+
+// ─── TICKET REVIEW & CONFIRM (catches AI misreads before they hit your data) ───
+function previewMatch(ticketNum) {
+  const tn = String(ticketNum || '').replace(/\s/g, '');
+  if (!tn) return { matched: false };
+  for (const s of DB.settlements) {
+    const row = (s.rows || []).find(r => String(r.ticket || '').replace(/\s/g, '') == tn);
+    if (row) return { matched: true, settId: s.id, company: s.company, tons: row.tons, rate: row.rate, total: row.total };
+  }
+  return { matched: false };
+}
+
+function renderTicketReview() {
+  const wrap = document.getElementById('ticket-review');
+  if (!wrap) return;
+  if (!pendingTickets.length) { wrap.innerHTML = ''; wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+  const rows = pendingTickets.map((t, i) => {
+    const pv = previewMatch(t.ticket);
+    t._matchPreview = pv;
+    t._dup = !!DB.tickets.find(x => String(x.ticket||'').replace(/\s/g,'') === String(t.ticket||'').replace(/\s/g,'') && String(t.ticket||'').trim() !== '');
+    const tonsDiff = pv.matched && t.tons ? Math.abs(parseFloat(t.tons||0) - parseFloat(pv.tons||0)) : 0;
+    const hasDisc = tonsDiff > 0.1;
+    let statusBadge;
+    if (t._dup) statusBadge = '<span class="badge badge-amber">duplicate</span>';
+    else if (t._scanError) statusBadge = '<span class="badge badge-red">scan failed</span>';
+    else if (hasDisc) statusBadge = `<span class="badge badge-red">⚠ tons: paid ${parseFloat(pv.tons).toFixed(2)}</span>`;
+    else if (pv.matched) statusBadge = '<span class="badge badge-green">✓ matches ' + (pv.company||'') + '</span>';
+    else statusBadge = '<span class="badge badge-gray">no match yet</span>';
+    const photoBtn = t.photo_url ? `<a href="#" onclick="viewPhoto('${t.photo_url}');return false;" style="font-size:14px;text-decoration:none;" title="View photo">📷</a>` : '';
+    const inputStyle = 'width:100%;padding:6px 8px;font-size:13px;background:var(--surface);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:\'Barlow\',sans-serif;';
+    return `<div style="background:var(--surface2);border:1px solid ${t._dup ? 'var(--amber)' : hasDisc ? 'var(--red)' : pv.matched ? 'var(--green)' : 'var(--border)'};border-radius:10px;padding:10px;margin-bottom:8px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
+          <input type="checkbox" id="ptk-inc-${i}" ${t._dup ? '' : 'checked'} style="width:16px;height:16px;accent-color:var(--green);">
+          <span style="color:var(--text2);">Save</span>
+        </label>
+        ${photoBtn}
+        <span style="font-size:11px;color:var(--text3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${t.file||''}</span>
+        ${statusBadge}
+      </div>
+      <div style="display:grid;grid-template-columns:1.2fr 1fr 0.7fr;gap:6px;margin-bottom:6px;">
+        <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Ticket #</div><input style="${inputStyle}" value="${(t.ticket||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].ticket=this.value;clearTimeout(window._ptkT);window._ptkT=setTimeout(renderTicketReview,800);"></div>
+        <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Date</div><input style="${inputStyle}" value="${(t.date||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].date=this.value;"></div>
+        <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Tons</div><input style="${inputStyle}" value="${(t.tons||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].tons=this.value;"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+        <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Pickup</div><input style="${inputStyle}" value="${(t.pickup||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].pickup=this.value;"></div>
+        <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Deliver</div><input style="${inputStyle}" value="${(t.deliver||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].deliver=this.value;"></div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const matchCount = pendingTickets.filter(t => t._matchPreview && t._matchPreview.matched && !t._dup).length;
+  wrap.innerHTML = `
+    <div class="card" style="margin-top:12px;border-color:var(--amber);">
+      <div class="card-title">✍️ Review Before Saving — fix any misreads (${pendingTickets.length} ticket${pendingTickets.length===1?'':'s'}, ${matchCount} will match)</div>
+      <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">Check each ticket number against the photo 📷. Edit anything the AI got wrong — matching updates as you type. Uncheck any you don't want saved.</div>
+      ${rows}
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <button class="btn btn-green" style="flex:1;" onclick="confirmSaveTickets()">✅ Confirm & Save Tickets</button>
+        <button class="btn" onclick="pendingTickets=[];renderTicketReview();document.getElementById('ticket-btn').innerHTML='🚀 Read & Save Tickets';document.getElementById('ticket-btn').disabled=ticketFiles.length===0;">✕ Cancel</button>
+      </div>
+    </div>`;
+  wrap.scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+async function confirmSaveTickets() {
+  const toSave = pendingTickets.filter((t, i) => {
+    const cb = document.getElementById('ptk-inc-' + i);
+    return cb && cb.checked;
+  });
+  if (!toSave.length) { showGlobalAlert('No tickets selected to save.', 'err'); return; }
+
+  const results = [];
+  for (const t of toSave) {
+    delete t._dup; delete t._matchPreview; delete t._scanError;
+    // Duplicate handling at save time (photo update for existing)
+    const dupTicket = DB.tickets.find(x => String(x.ticket||'').replace(/\s/g,'') === String(t.ticket||'').replace(/\s/g,''));
+    if (dupTicket) {
+      if (t.photo_url) {
+        dupTicket.photo_url = t.photo_url;
+        dupTicket.has_local_photo = t.has_local_photo;
+        if (!t.has_local_photo) gasPost({action: 'saveTicket', ticket: dupTicket}).catch(() => {});
+      }
+      continue;
+    }
+    // Final matching with (possibly corrected) ticket number
+    const tn = String(t.ticket || '').replace(/\s/g, '');
+    let matchedRow = null, matchedSettId = null;
+    for (const s of DB.settlements) {
+      const row = (s.rows || []).find(r => String(r.ticket || '').replace(/\s/g, '') == tn);
+      if (row) { matchedRow = row; matchedSettId = s.id; break; }
+    }
+    if (matchedRow) { t.settlement_id = matchedSettId; t.matched = true; t.settled_tons = matchedRow.tons; t.settled_rate = matchedRow.rate; t.settled_total = matchedRow.total; t.settled_fsc = matchedRow.fsc; t.tons_diff = Math.abs(parseFloat(t.tons || 0) - parseFloat(matchedRow.tons || 0)); t.has_discrepancy = t.tons_diff > 0.1; matchedRow.ticket_uploaded = true; }
+    else { t.matched = false; t.has_discrepancy = false; t.settlement_id = null; }
+    results.push(t);
   }
 
   DB.tickets = DB.tickets.filter(t => !results.find(r => String(r.ticket||'') == String(t.ticket||'')));
   DB.tickets.push(...results);
   save(); renderAll();
-  // Push tickets to cloud
   for (const t of results) { if (!t.error) await pushToCloud({id:'skip'}, [t]); }
+
   const matched = results.filter(t => t.matched).length;
   const discs = results.filter(t => t.has_discrepancy).length;
-  const dups = results.filter(t => t.duplicate).length;
-  btn.innerHTML = `✅ Done! ${matched}/${results.length} matched${discs > 0 ? ` · ⚠ ${discs} discrepancy` : ''}${dups > 0 ? ` · ${dups} duplicate(s) skipped` : ''}`;
+  const skipped = toSave.length - results.length;
+  pendingTickets = [];
+  renderTicketReview();
+  setProc('ticket-proc', '');
+  const btn = document.getElementById('ticket-btn');
+  btn.innerHTML = `✅ Saved! ${matched}/${results.length} matched${discs > 0 ? ` · ⚠ ${discs} discrepancy` : ''}${skipped > 0 ? ` · ${skipped} duplicate photo(s) updated` : ''}`;
   btn.style.background = discs > 0 ? '#854F0B' : '#1aad68';
-  const pbEl2 = document.getElementById('ticket-progress-bar');
-  if (pbEl2) pbEl2.style.width = '100%';
-  const pbTxt2 = document.getElementById('ticket-progress-txt');
-  if (pbTxt2) pbTxt2.textContent = `100% — all ${totalTickets} tickets processed!`;
-  btn.innerHTML = `✅ Done! ${totalTickets} ticket(s) processed`;
+  showGlobalAlert(`✅ ${results.length} ticket(s) saved — ${matched} matched${discs ? `, ${discs} discrepancy to review!` : ''}`, discs ? 'err' : 'ok');
   setTimeout(() => { btn.innerHTML = '🚀 Read & Save Tickets'; btn.style.background = ''; ticketFiles = []; renderQueue('ticket-queue', ticketFiles, 'ticket'); btn.disabled = true; }, 4000);
 }
 
@@ -1501,7 +1717,7 @@ function renderTickets() {
     }
     const badge = x.error ? `<span class="badge badge-gray">Error</span>` : x.has_discrepancy ? `<span class="badge badge-red">⚠ Mismatch</span>` : !x.matched ? `<span class="badge badge-amber">Not settled</span>` : `<span class="badge badge-green">✓ Matched</span>`;
     const tc = x.matched && x.has_discrepancy ? `<td style="color:var(--red);font-weight:600;">${parseFloat(x.tons||0).toFixed(2)}</td>` : `<td>${x.tons ? parseFloat(x.tons).toFixed(2) : '—'}</td>`;
-    const photoBtn = x.photo_url ? `<a href="${x.photo_url}" target="_blank" style="font-size:12px;text-decoration:none;margin-left:3px;" title="View photo">📷</a>` : '';
+    const photoBtn = x.photo_url ? `<a href="#" onclick="viewPhoto('${x.photo_url}');return false;" style="font-size:12px;text-decoration:none;margin-left:3px;" title="View photo">📷</a>` : '';
     const editBtn = `<button onclick="editTicket('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text3);margin-left:3px;padding:0;" title="Edit ticket number">✏️</button>`;
     const delBtn = `<button onclick="deleteTicket('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text3);margin-left:3px;padding:0;" title="Delete ticket">🗑️</button>`;
     return `<tr><td class="mono" style="white-space:nowrap;"><span>${x.ticket||'—'}</span>${photoBtn}${editBtn}${delBtn}</td><td style="white-space:nowrap;font-size:12px;">${cleanDate(x.date)||'—'}</td><td style="font-size:12px;">${x.pickup||'—'}</td><td style="font-size:12px;">${x.deliver||'—'}</td>${tc}<td>${x.settled_tons ? parseFloat(x.settled_tons).toFixed(2) : '—'}</td><td>${x.settled_rate ? '$'+parseFloat(x.settled_rate).toFixed(2) : '—'}</td><td>${x.settled_total ? fmt$(x.settled_total) : '—'}</td><td>${x.settled_fsc ? fmt$(x.settled_fsc) : '—'}</td><td>${badge}</td></tr>`;
@@ -1557,7 +1773,7 @@ function renderSetts() {
           // Mark uploaded if ticket was scanned (has photo) OR flag is set
           const isUploaded = r.ticket_uploaded || !!photoUrl;
           const ticketBadge = isUploaded
-            ? `<span class="badge badge-green" style="gap:4px;">✓${photoUrl ? ` <a href="${photoUrl}" target="_blank" style="color:var(--green);text-decoration:none;font-size:13px;" onclick="event.stopPropagation()">📷</a>` : ''}</span>`
+            ? `<span class="badge badge-green" style="gap:4px;">✓${photoUrl ? ` <a href="#" onclick="event.stopPropagation();viewPhoto('${photoUrl}');return false;" style="color:var(--green);text-decoration:none;font-size:13px;">📷</a>` : ''}</span>`
             : '<span class="badge badge-gray">—</span>';
           return `<tr><td class="mono">${r.ticket||'—'}</td><td style="font-size:12px;">${cleanDate(r.date)||'—'}</td><td style="font-size:12px;">${r.pickup||''}→${r.deliver||''}</td><td>${parseFloat(r.tons||0).toFixed(2)}</td><td>$${parseFloat(r.rate||0).toFixed(2)}</td><td>${fmt$(r.total)}</td><td>${fmt$(r.fsc)}</td><td>${ticketBadge}</td></tr>`;
         }).join('')}</tbody>
@@ -1745,7 +1961,7 @@ function renderWeekly() {
         <thead><tr><th>Ticket #</th><th>Date</th><th>Pickup</th><th>Deliver</th><th>Tons</th><th>Status</th></tr></thead>
         <tbody>${w.tickets.map(t => {
           const badge = t.has_discrepancy ? '<span class="badge badge-red">⚠</span>' : t.matched ? '<span class="badge badge-green">✓</span>' : '<span class="badge badge-amber">⏳</span>';
-          const photoBtn = t.photo_url ? `<a href="${t.photo_url}" target="_blank" style="font-size:11px;color:var(--blue);text-decoration:none;">📷</a>` : '';
+          const photoBtn = t.photo_url ? `<a href="#" onclick="viewPhoto('${t.photo_url}');return false;" style="font-size:11px;color:var(--blue);text-decoration:none;">📷</a>` : '';
           return `<tr><td class="mono" style="font-size:11px;">${t.ticket||'—'} ${photoBtn}</td><td style="font-size:11px;white-space:nowrap;">${cleanDate(t.date)}</td><td style="font-size:11px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${(t.pickup||'—').split(',')[0]}</td><td style="font-size:11px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${(t.deliver||'—').split(',')[0]}</td><td style="white-space:nowrap;">${t.tons?parseFloat(t.tons).toFixed(2):'—'}</td><td>${badge}</td></tr>`;
         }).join('')}</tbody>
       </table></div>
