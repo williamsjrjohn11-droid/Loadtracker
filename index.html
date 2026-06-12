@@ -1110,6 +1110,22 @@ async function viewPhoto(photoUrl, ticketKey) {
     window.open(photoUrl, '_blank');
   }
 }
+// Open a settlement's original document (PDF or photo) from IndexedDB
+async function viewSettDoc(settId) {
+  const s = DB.settlements.find(x => x.id === settId);
+  if (!s || !s.doc_ref) { showGlobalAlert('Original document not available on this device (it was uploaded from another device).', 'err'); return; }
+  const key = s.doc_ref.startsWith('local:') ? s.doc_ref.slice(6) : s.doc_ref;
+  const b64 = await getPhotoLocal(key);
+  if (!b64) { showGlobalAlert('Document not found on this device.', 'err'); return; }
+  const bytes = atob(b64);
+  const arr = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+  const blob = new Blob([arr], {type: s.doc_mime || 'application/pdf'});
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
 // One-time migration: move any old giant data-URL photos out of localStorage into IndexedDB
 async function migratePhotosToIDB() {
   let moved = 0;
@@ -1291,6 +1307,12 @@ async function readSingleSett(f) {
     s.id = 's_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
     s.uploaded_at = new Date().toISOString();
     s.rows = (s.rows || []).map(r => { r.ticket_uploaded = false; return r; });
+    // Store the original settlement document locally so it can be viewed later
+    try {
+      const docKey = 'settdoc_' + s.id;
+      const stored = await savePhotoLocal(docKey, b64);
+      if (stored) { s.doc_ref = 'local:' + docKey; s.doc_mime = mt.includes('pdf') ? 'application/pdf' : mt; }
+    } catch(e) {}
     return s;
   } catch(e) {
     showGlobalAlert('❌ Failed to read ' + f.name + ': ' + e.message, 'err');
@@ -1342,6 +1364,12 @@ async function processSingleSett(f) {
     s.id = 's_' + Date.now();
     s.uploaded_at = new Date().toISOString();
     s.rows = (s.rows || []).map(r => { r.ticket_uploaded = false; return r; });
+    // Store the original settlement document locally so it can be viewed later
+    try {
+      const docKey = 'settdoc_' + s.id;
+      const stored = await savePhotoLocal(docKey, b64);
+      if (stored) { s.doc_ref = 'local:' + docKey; s.doc_mime = mt.includes('pdf') ? 'application/pdf' : mt; }
+    } catch(e) {}
     DB.tickets = DB.tickets.map(t => {
       const tn = String(t.ticket || '').replace(/\s/g, '');
       const row = (s.rows || []).find(r => String(r.ticket || '').replace(/\s/g, '') == tn);
@@ -1808,7 +1836,7 @@ function renderSetts() {
     return `<div class="sett-card">
       <div class="sett-header">
         <div><div class="sett-name">${s.company||'Settlement'} — ${s.check_date||'?'}</div><div class="sett-meta">Truck: ${s.truck||'—'} &nbsp;·&nbsp; ${loads} loads &nbsp;·&nbsp; ${up}/${loads} tickets<div class="prog-track" style="width:160px;"><div class="prog-fill" style="width:${pct}%"></div></div></div></div>
-        <div style="text-align:right;flex-shrink:0;margin-left:12px;"><div class="sett-net">${fmt$(s.net_total)}</div><div class="sett-netlabel">net payout</div><button class="btn btn-sm btn-red" style="margin-top:8px;" onclick="delS('${s.id}')">🗑 Delete</button></div>
+        <div style="text-align:right;flex-shrink:0;margin-left:12px;"><div class="sett-net">${fmt$(s.net_total)}</div><div class="sett-netlabel">net payout</div><div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px;">${s.doc_ref ? `<button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="viewSettDoc('${s.id}')">📄 View</button>` : ''}<button class="btn btn-sm btn-red" onclick="delS('${s.id}')">🗑 Delete</button></div></div>
       </div>
       <div class="table-wrap"><table>
         <thead><tr><th>Ticket #</th><th>Date</th><th>Route</th><th>Tons</th><th>Rate</th><th>Total</th><th>FSC</th><th>Ticket</th></tr></thead>
@@ -1838,6 +1866,8 @@ function fS(v) { sFilter = v; renderTickets(); }
 
 function delS(id) {
   if (!confirm('Delete this settlement and its tickets?')) return;
+  const s = DB.settlements.find(x => x.id === id);
+  if (s && s.doc_ref && s.doc_ref.startsWith('local:')) deletePhotoLocal(s.doc_ref.slice(6));
   DB.settlements = DB.settlements.filter(s => s.id !== id);
   DB.tickets = DB.tickets.filter(t => t.settlement_id !== id);
   save(); renderAll(); populateSel();
