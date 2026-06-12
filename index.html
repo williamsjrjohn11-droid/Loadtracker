@@ -288,39 +288,6 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
   <!-- UPLOAD -->
   <div class="panel" id="panel-upload">
 
-    <!-- GOOGLE SHEETS SYNC -->
-    <div class="api-section" style="background:rgba(66,133,244,0.1);border-color:rgba(66,133,244,0.3);margin-bottom:16px;">
-      <div class="api-title" style="color:#4285F4;cursor:pointer;display:flex;align-items:center;justify-content:space-between;" onclick="toggleGSheets()">
-        <span>🔗 Google Sheets Sync</span>
-        <span id="gs-toggle" style="font-size:11px;font-weight:400;opacity:.7;">▼ show</span>
-      </div>
-      <div id="gs-body" style="display:none;">
-        <div class="api-desc">Connect to Google Sheets so your manager can see all your loads in real time. Data syncs both ways.</div>
-        <div style="margin-bottom:10px;">
-          <div style="font-size:12px;color:var(--text2);margin-bottom:6px;">Sheet ID (from your Google Sheets URL)</div>
-          <div style="display:flex;gap:8px;">
-            <input type="text" id="sheet-id-input" placeholder="1dRXTBYixJrc2nfBOYJbxca3J34JgyibDix4DbrpUPt8" style="font-family:var(--font-sans);min-height:unset;padding:9px 12px;resize:none;" />
-            <button class="btn btn-sm" style="background:#4285F4;color:#fff;border:none;white-space:nowrap;" onclick="saveSheetId()">Save</button>
-          </div>
-        </div>
-        <div id="gs-auth-area">
-          <button class="btn btn-full" style="background:#4285F4;color:#fff;border:none;padding:11px;" onclick="signInGoogle()">
-            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" style="width:18px;height:18px;"> Sign in with Google to sync
-          </button>
-        </div>
-        <div id="gs-signed-in" style="display:none;">
-          <div style="display:flex;align-items:center;gap:8px;padding:8px 0;font-size:13px;color:var(--green);">✓ Connected to Google Sheets</div>
-          <div style="display:flex;gap:8px;">
-            <button class="btn btn-full" style="background:#4285F4;color:#fff;border:none;" onclick="syncToSheets()">⬆ Push all data to Sheet</button>
-            <button class="btn btn-full" style="background:var(--surface2);" onclick="syncFromSheets()">⬇ Pull from Sheet</button>
-          </div>
-          <button class="btn btn-sm btn-red" style="margin-top:8px;" onclick="signOutGoogle()">Sign out</button>
-        </div>
-        <div id="gs-status" style="margin-top:8px;"></div>
-      </div>
-      <div id="gs-saved-indicator" style="font-size:12px;color:#4285F4;margin-top:4px;display:none;">✓ Google Sheets connected</div>
-    </div>
-
     <!-- API KEY -->
     <div class="api-section">
       <div class="api-title" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;" onclick="toggleApiSection()">
@@ -471,14 +438,16 @@ function toggleGSheets() {
 }
 
 function saveSheetId() {
-  const id = document.getElementById('sheet-id-input').value.trim();
+  const el = document.getElementById('sheet-id-input');
+  const id = el ? el.value.trim() : '';
   if (!id) return;
   localStorage.setItem(GSHEET_ID_KEY, id);
   showGsStatus('✅ Sheet ID saved!', 'ok');
 }
 
 function getSheetId() {
-  return localStorage.getItem(GSHEET_ID_KEY) || document.getElementById('sheet-id-input').value.trim();
+  const el = document.getElementById('sheet-id-input');
+  return localStorage.getItem(GSHEET_ID_KEY) || (el ? el.value.trim() : '') || '1dRXTBYixJrc2nfBOYJbxca3J34JgyibDix4DbrpUPt8';
 }
 
 function initGoogle() {
@@ -505,7 +474,8 @@ function initGoogle() {
     });
     localStorage.removeItem('lt_gtoken');
     const savedSheetId = localStorage.getItem(GSHEET_ID_KEY);
-    if (savedSheetId) document.getElementById('sheet-id-input').value = savedSheetId;
+    const sii = document.getElementById('sheet-id-input');
+    if (savedSheetId && sii) sii.value = savedSheetId;
   } catch(e) { console.log('Google API not loaded yet'); }
 }
 
@@ -528,15 +498,18 @@ function signInGoogle() {
 function signOutGoogle() {
   gAccessToken = null;
   localStorage.removeItem('lt_gtoken');
-  document.getElementById('gs-auth-area').style.display = 'block';
-  document.getElementById('gs-signed-in').style.display = 'none';
-  document.getElementById('gs-saved-indicator').style.display = 'none';
+  try {
+    document.getElementById('gs-auth-area').style.display = 'block';
+    document.getElementById('gs-signed-in').style.display = 'none';
+    document.getElementById('gs-saved-indicator').style.display = 'none';
+  } catch(e) {}
   showGsStatus('Signed out.', 'ok');
   updateGoogleStatusBar();
 }
 
 function showGsStatus(msg, type) {
   const el = document.getElementById('gs-status');
+  if (!el) { if (typeof showGlobalAlert === 'function') showGlobalAlert(msg, type === 'err' ? 'err' : 'ok'); return; }
   el.innerHTML = `<div class="alert alert-${type === 'ok' ? 'ok' : 'err'}" style="margin-top:6px;">${msg}</div>`;
   setTimeout(() => { el.innerHTML = ''; }, 4000);
 }
@@ -548,7 +521,7 @@ async function sheetReq(method, path, body) {
   const opts = { method, headers: { 'Authorization': 'Bearer ' + gAccessToken, 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(url, opts);
-  if (r.status === 401) { gAccessToken = null; localStorage.removeItem('lt_gtoken'); document.getElementById('gs-auth-area').style.display = 'block'; document.getElementById('gs-signed-in').style.display = 'none'; showGsStatus('Session expired — please sign in again.', 'err'); return null; }
+  if (r.status === 401) { gAccessToken = null; localStorage.removeItem('lt_gtoken'); try { document.getElementById('gs-auth-area').style.display = 'block'; document.getElementById('gs-signed-in').style.display = 'none'; } catch(e) {} showGsStatus('Session expired — please sign in again.', 'err'); return null; }
   return r.ok ? r.json() : null;
 }
 
