@@ -215,12 +215,20 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
     <!-- Desktop: Google sign in -->
     <div id="google-status-bar" class="desktop-only" style="display:flex;align-items:center;justify-content:space-between;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;">
       <span id="google-status-text" style="color:var(--text2);">🔗 Google not connected</span>
-      <button id="google-action-btn" class="btn btn-sm" style="font-size:12px;" onclick="toggleGoogleAuth()">Sign in with Google</button>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-sm" style="font-size:12px;" onclick="relinkDrivePhotos()" title="Restore missing photo links from your Drive folder">🔄 Relink photos</button>
+        <button id="google-action-btn" class="btn btn-sm" style="font-size:12px;" onclick="toggleGoogleAuth()">Sign in with Google</button>
+      </div>
     </div>
-    <!-- Mobile: Direct Drive folder link -->
-    <a href="https://drive.google.com/drive/folders/1ISVKVnQRylbkZ5-YCAWXav0A0Lt89p4E" target="_blank" class="mobile-only" style="display:flex;align-items:center;justify-content:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:11px 14px;margin-bottom:12px;font-size:13px;color:var(--blue);text-decoration:none;font-weight:500;">
-      📷 View all ticket photos in Google Drive
-    </a>
+    <!-- Mobile: Direct Drive folder link + relink -->
+    <div class="mobile-only" style="display:flex;gap:8px;margin-bottom:12px;">
+      <a href="https://drive.google.com/drive/folders/1ISVKVnQRylbkZ5-YCAWXav0A0Lt89p4E" target="_blank" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:11px 8px;font-size:12px;color:var(--blue);text-decoration:none;font-weight:500;">
+        📷 Drive photos
+      </a>
+      <button onclick="relinkDrivePhotos()" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:11px 8px;font-size:12px;color:var(--text);font-weight:500;cursor:pointer;font-family:'Barlow',sans-serif;">
+        🔄 Relink photos
+      </button>
+    </div>
     <div class="metrics">
       <div class="metric"><div class="metric-label">YTD Earnings</div><div class="metric-value green" id="m-earn">$0.00</div></div>
       <div class="metric"><div class="metric-label">Total Loads</div><div class="metric-value" id="m-loads">0</div></div>
@@ -643,6 +651,58 @@ async function uploadPhotoToDrive(file, ticketNum, convertedB64) {
     body: JSON.stringify({ role: 'reader', type: 'anyone' })
   });
   return `https://drive.google.com/file/d/${data.id}/view`;
+}
+
+// ─── RELINK DRIVE PHOTOS ──────────────────────────────────────
+// Scans the LoadTracker Drive folder, matches photos to tickets by the
+// Ticket_{number}_ filename pattern, and restores missing photo_url links.
+// Works from ANY device signed into the Google account — recovers links
+// even when the original scanning device isn't available.
+async function relinkDrivePhotos() {
+  if (!gAccessToken) { showGlobalAlert('Sign in with Google first (Dashboard tab).', 'err'); return; }
+  showGlobalAlert('🔍 Scanning your Drive folder for ticket photos...', 'ok');
+  try {
+    let files = [], pageToken = null;
+    do {
+      const q = encodeURIComponent(`'${DRIVE_FOLDER_ID}' in parents and trashed = false`);
+      const url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=nextPageToken,files(id,name)&pageSize=1000${pageToken ? '&pageToken=' + pageToken : ''}`;
+      const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + gAccessToken } });
+      if (resp.status === 401) { showGlobalAlert('Google session expired — sign in again.', 'err'); return; }
+      if (!resp.ok) throw new Error('Drive list failed: ' + resp.status);
+      const d = await resp.json();
+      files.push(...(d.files || []));
+      pageToken = d.nextPageToken;
+    } while (pageToken);
+
+    // Build ticket-number → file map from Ticket_{number}_ filenames (newest wins on dup names)
+    const byTicket = {};
+    for (const f of files) {
+      const m = (f.name || '').match(/^Ticket_(.+?)_\d{4}-\d{2}-\d{2}/);
+      if (m && m[1]) byTicket[String(m[1]).replace(/\s/g,'')] = f.id;
+    }
+
+    let linked = 0;
+    for (const t of DB.tickets) {
+      const tn = String(t.ticket || '').replace(/\s/g, '');
+      if (!tn) continue;
+      const fileId = byTicket[tn];
+      // Link if the ticket has no photo, or only a device-local one (upgrade to Drive)
+      if (fileId && (!t.photo_url || t.photo_url.startsWith('local:'))) {
+        t.photo_url = `https://drive.google.com/file/d/${fileId}/view`;
+        t.has_local_photo = false;
+        linked++;
+      }
+    }
+
+    if (linked > 0) {
+      save(); renderAll();
+      showGlobalAlert(`✅ Relinked ${linked} photo(s) from Drive! Push to cloud to share with other devices.`, 'ok');
+    } else {
+      showGlobalAlert(`Found ${files.length} file(s) in Drive but no new links needed — everything's already connected.`, 'ok');
+    }
+  } catch(e) {
+    showGlobalAlert('❌ Relink failed: ' + e.message, 'err');
+  }
 }
 
 function toggleGoogleAuth() {
