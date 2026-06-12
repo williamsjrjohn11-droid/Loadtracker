@@ -2218,12 +2218,30 @@ function exportCSV() {
 }
 
 function showGlobalAlert(msg, type) {
+  // Toasts stack vertically in a shared container instead of overlapping
+  let container = document.getElementById('toast-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'toast-container';
+    container.style.cssText = 'position:fixed;top:70px;right:20px;z-index:999;display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:none;max-height:calc(100vh - 90px);overflow:hidden;';
+    document.body.appendChild(container);
+  }
   const d = document.createElement('div');
   d.className = `alert alert-${type}`;
-  d.style.cssText = 'position:fixed;top:70px;right:20px;z-index:999;min-width:280px;max-width:400px;';
+  d.style.cssText = 'min-width:280px;max-width:400px;pointer-events:auto;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.4);transition:opacity 0.3s, transform 0.3s;';
   d.textContent = msg;
-  document.body.appendChild(d);
-  setTimeout(() => d.remove(), 4000);
+  d.title = 'Tap to dismiss';
+  d.onclick = () => d.remove();
+  container.appendChild(d);
+  // Cap visible toasts at 4 — drop the oldest
+  while (container.children.length > 4) container.firstChild.remove();
+  // Longer messages stay longer (min 4s, +30ms per char, max 9s)
+  const ttl = Math.min(9000, Math.max(4000, msg.length * 30));
+  setTimeout(() => {
+    d.style.opacity = '0';
+    d.style.transform = 'translateX(20px)';
+    setTimeout(() => d.remove(), 300);
+  }, ttl);
 }
 
 function cleanDate(dateStr) {
