@@ -1950,7 +1950,8 @@ async function processTickets() {
 
       // Stage for review — check duplicate + match preview, but DON'T save yet
       if (finalPhotoUrl) { t.photo_url = finalPhotoUrl; t.has_local_photo = !photoUrl; }
-      t._dup = !!DB.tickets.find(x => String(x.ticket||'').replace(/\s/g,'') === String(t.ticket||'').replace(/\s/g,''));
+      t._dup = !!DB.tickets.find(x => String(x.ticket||'').replace(/\s/g,'') === String(t.ticket||'').replace(/\s/g,''))
+               || !!pendingTickets.find(x => String(x.ticket||'').replace(/\s/g,'') === String(t.ticket||'').replace(/\s/g,'') && String(t.ticket||'').trim() !== '');
       const preview = previewMatch(t.ticket);
       t._matchPreview = preview;
       // Remember what the AI originally read — used at confirm time to delete the old
