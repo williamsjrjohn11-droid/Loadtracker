@@ -498,6 +498,8 @@ function initGoogle() {
         // Remove pulse from sign-in button once signed in
         const _gsb = document.getElementById('google-action-btn');
         if (_gsb) _gsb.classList.remove('needs-signin');
+        const _gsmb = document.getElementById('google-mobile-btn');
+        if (_gsmb) _gsmb.classList.remove('needs-signin');
         localStorage.setItem('lt_gtoken', resp.access_token);
         try {
           document.getElementById('gs-auth-area').style.display = 'none';
@@ -1275,7 +1277,9 @@ function addFiles(files, type) {
     showGlobalAlert('📸 Sign in with Google first so your photos save to Drive!', 'err');
     // Pulse the sign in button to draw attention
     const btn = document.getElementById('google-action-btn');
+    const mobBtn = document.getElementById('google-mobile-btn');
     if (btn) { btn.classList.add('needs-signin'); setTimeout(() => btn.classList.remove('needs-signin'), 5000); }
+    if (mobBtn) { mobBtn.classList.add('needs-signin'); setTimeout(() => mobBtn.classList.remove('needs-signin'), 5000); }
     return;
   }
   if (type === 'settlement') {
@@ -2577,6 +2581,11 @@ function renderAll() {
   if (gsBtn) {
     if (!gAccessToken) gsBtn.classList.add('needs-signin');
     else gsBtn.classList.remove('needs-signin');
+  }
+  const gsMobBtn = document.getElementById('google-mobile-btn');
+  if (gsMobBtn) {
+    if (!gAccessToken) gsMobBtn.classList.add('needs-signin');
+    else gsMobBtn.classList.remove('needs-signin');
   }
   renderDash(); renderTickets(); renderSetts();
   const wp = document.getElementById('panel-weekly');
