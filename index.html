@@ -2478,13 +2478,21 @@ function getWeekRange(date) {
   if (isNaN(d)) return null;
   const day = d.getDay(); // 0=Sun
   const sun = new Date(d); sun.setDate(d.getDate() - day);
+  sun.setHours(0,0,0,0);
+  // Build key as local date string to avoid UTC timezone shift
+  const y = sun.getFullYear();
+  const m = String(sun.getMonth()+1).padStart(2,'0');
+  const dd = String(sun.getDate()).padStart(2,'0');
+  const key = `${y}-${m}-${dd}`;
   const sat = new Date(sun); sat.setDate(sun.getDate() + 6);
-  sun.setHours(0,0,0,0); sat.setHours(23,59,59,999);
-  return { sun, sat, key: sun.toISOString().slice(0,10) };
+  sat.setHours(23,59,59,999);
+  return { sun, sat, key };
 }
 
 function getWeekLabel(key) {
-  const sun = new Date(key);
+  // Parse key as local time (not UTC) to avoid day shift
+  const parts = key.split('-');
+  const sun = new Date(parseInt(parts[0]), parseInt(parts[1])-1, parseInt(parts[2]));
   const sat = new Date(sun); sat.setDate(sun.getDate() + 6);
   const fmt = d => d.toLocaleDateString('en-US', {month:'short', day:'numeric'});
   return `${fmt(sun)} — ${fmt(sat)}`;
