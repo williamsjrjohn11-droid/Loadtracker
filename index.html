@@ -4087,7 +4087,7 @@ function renderDriverSettlementDoc(ds, isPreview) {
   const docLabel = isPreview ? 'PREVIEW' : (ds.settlement_number || ds.id);
   const ytd = computeDriverYTD(ds);
 
-  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Settlement ${docLabel} — ${ds.driver}</title>
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Settlement ${docLabel} — ${ds.driver}</title>
 <style>
   @page{margin:18mm;}
   body{font-family:Arial,Helvetica,sans-serif;background:#fff;color:#111;font-size:13px;margin:0;padding:24px;box-sizing:border-box;max-width:900px;margin-left:auto;margin-right:auto;}
@@ -4109,13 +4109,24 @@ function renderDriverSettlementDoc(ds, isPreview) {
   th{text-align:left;padding:7px 8px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#888;border-bottom:1px solid #e5e7eb;background:#111;color:#f5a623;}
   td{padding:7px 8px;border-bottom:1px solid #f3f4f6;}
   tr:last-child td{border-bottom:none;}
-  .math-box{width:280px;margin-left:auto;margin-top:16px;}
+  .math-box{width:280px;max-width:100%;margin-left:auto;margin-top:16px;}
   .math-row{display:flex;justify-content:space-between;padding:6px 10px;font-size:12px;border-bottom:1px solid #f3f4f6;}
   .math-row.checkdate{background:#fef9c3;font-weight:700;}
   .math-row.total{font-weight:700;}
   .math-row.final{background:#111;color:#f5a623;font-weight:800;font-size:14px;border-radius:4px;margin-top:4px;}
   .footer{margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:10px;color:#999;display:flex;justify-content:space-between;}
   @media print{.no-print{display:none;}}
+  @media(max-width:480px){
+    body{padding:14px;font-size:12px;}
+    .header{flex-direction:column;gap:10px;}
+    .inv-meta{text-align:left;}
+    .parties{flex-direction:column;gap:14px;}
+    .logo-title{font-size:18px;}
+    table{font-size:10px;}
+    th,td{padding:5px;}
+    .math-box{width:100%;}
+    .footer{flex-direction:column;gap:4px;}
+  }
 </style>
 </head><body>
 ${isPreview ? '<div class="preview-banner">⚠ PREVIEW ONLY — this settlement has not been generated or saved yet</div>' : ''}
@@ -4148,14 +4159,14 @@ ${isPreview ? '<div class="preview-banner">⚠ PREVIEW ONLY — this settlement 
 
 <div style="overflow-x:auto;">
 <table>
-<thead><tr><th>#</th><th>Date</th><th>Ticket #</th><th>Truck #</th><th>Pickup</th><th>Deliver</th><th>Tons</th><th>Rate</th><th>Total</th><th>FSC</th></tr></thead>
+<thead><tr><th>#</th><th>Date</th><th>Ticket #</th><th>Truck #</th><th>Pickup</th><th>Deliver</th><th>Tons</th><th>Rate</th><th>Total</th>${isPercentageDriver(d) ? '' : '<th>FSC</th>'}</tr></thead>
 <tbody>
 ${rows.map((t,i) => {
   const rate = driverPayRate(t, d);
   const rateCell = fmt(rate);
   const fscRow = fscDetails[t.ticket];
   const fscCell = fscRow ? `${fmt(fscRow.amt)} (${fscRow.pct}%)` : '—';
-  return `<tr><td>${i+1}</td><td>${cleanDate(t.date)||'—'}</td><td>${t.ticket||'—'}</td><td>${t.truck||'—'}</td><td>${t.pickup||'—'}</td><td>${t.deliver||'—'}</td><td>${parseFloat(t.tons||0).toFixed(2)}</td><td>${rateCell}</td><td>${fmt(parseFloat(t.tons||0)*rate)}</td><td>${fscCell}</td></tr>`;
+  return `<tr><td>${i+1}</td><td>${cleanDate(t.date)||'—'}</td><td>${t.ticket||'—'}</td><td>${t.truck||'—'}</td><td>${t.pickup||'—'}</td><td>${t.deliver||'—'}</td><td>${parseFloat(t.tons||0).toFixed(2)}</td><td>${rateCell}</td><td>${fmt(parseFloat(t.tons||0)*rate)}</td>${isPercentageDriver(d) ? '' : `<td>${fscCell}</td>`}</tr>`;
 }).join('')}
 </tbody>
 </table>
@@ -4208,7 +4219,7 @@ function printEAInvoice(id) {
   try { invFscDetails = typeof inv.fsc_details === 'string' ? JSON.parse(inv.fsc_details||'{}') : (inv.fsc_details||{}); } catch(e) { invFscDetails = {}; }
   const invFscTotal = parseFloat(inv.fsc_amt||0);
 
-  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Invoice ${inv.invoice_number}</title>
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Invoice ${inv.invoice_number}</title>
 <style>
   @page{margin:18mm;}
   body{font-family:Arial,Helvetica,sans-serif;background:#fff;color:#111;font-size:13px;margin:0;padding:24px;box-sizing:border-box;max-width:900px;margin-left:auto;margin-right:auto;}
@@ -4232,6 +4243,16 @@ function printEAInvoice(id) {
   .total-row td{font-weight:800;border-top:2px solid #111;font-size:14px;}
   .footer{margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:10px;color:#999;display:flex;justify-content:space-between;}
   @media print{.no-print{display:none;}}
+  @media(max-width:480px){
+    body{padding:14px;font-size:12px;}
+    .header{flex-direction:column;gap:10px;}
+    .inv-meta{text-align:left;}
+    .parties{flex-direction:column;gap:14px;}
+    .logo-title{font-size:18px;}
+    table{font-size:10px;}
+    th,td{padding:5px;}
+    .footer{flex-direction:column;gap:4px;}
+  }
 </style>
 </head><body>
 <div class="header">
@@ -4626,7 +4647,7 @@ function exportEarningsReport(businessFilter) {
   const now = new Date();
   const printDate = now.toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
 
-  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Load Tracker — Earnings Report</title>
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Load Tracker — Earnings Report</title>
 <style>
   @page{margin:18mm;}
   body{font-family:Arial,Helvetica,sans-serif;background:#fff;color:#111;font-size:13px;margin:0;padding:24px;box-sizing:border-box;max-width:900px;margin-left:auto;margin-right:auto;}
@@ -4657,6 +4678,18 @@ function exportEarningsReport(businessFilter) {
   .alert-box{background:#fef9c3;border:1px solid #fbbf24;border-radius:7px;padding:10px 14px;font-size:12px;color:#b45309;margin-top:14px;}
   .footer{margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:10px;color:#999;display:flex;justify-content:space-between;}
   @media print{.no-print{display:none;}}
+  @media(max-width:480px){
+    body{padding:14px;font-size:12px;}
+    .header{flex-direction:column;gap:10px;}
+    .meta{text-align:left;}
+    .logo-title{font-size:18px;}
+    .metrics-grid{grid-template-columns:repeat(2,1fr);}
+    .metric-value{font-size:18px;}
+    .bar-val{width:70px;font-size:10px;}
+    table{font-size:10px;}
+    th,td{padding:5px;}
+    .footer{flex-direction:column;gap:4px;}
+  }
 </style>
 </head><body>
 <div class="header">
