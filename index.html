@@ -4143,7 +4143,6 @@ ${isPreview ? '<div class="preview-banner">⚠ PREVIEW ONLY — this settlement 
     <div class="party-label">Paid To</div>
     <div class="party-name">${ds.driver}</div>
     ${d&&d.truck_number?`<div class="party-line">Truck ${d.truck_number}</div>`:''}
-    ${isPercentageDriver(d)?`<div class="party-line" style="color:#b45309;font-weight:600;">Pay method: ${d.pay_pct}% of Amrize's rate per load — no FSC, no broker fee</div>`:''}
   </div>
 </div>
 
@@ -4153,7 +4152,7 @@ ${isPreview ? '<div class="preview-banner">⚠ PREVIEW ONLY — this settlement 
 <tbody>
 ${rows.map((t,i) => {
   const rate = driverPayRate(t, d);
-  const rateCell = isPercentageDriver(d) ? `${fmt(rate)} <span style="color:#999;font-size:9px;">(${d.pay_pct}% of ${fmt(t.rate_direct)})</span>` : fmt(rate);
+  const rateCell = fmt(rate);
   const fscRow = fscDetails[t.ticket];
   const fscCell = fscRow ? `${fmt(fscRow.amt)} (${fscRow.pct}%)` : '—';
   return `<tr><td>${i+1}</td><td>${cleanDate(t.date)||'—'}</td><td>${t.ticket||'—'}</td><td>${t.truck||'—'}</td><td>${t.pickup||'—'}</td><td>${t.deliver||'—'}</td><td>${parseFloat(t.tons||0).toFixed(2)}</td><td>${rateCell}</td><td>${fmt(parseFloat(t.tons||0)*rate)}</td><td>${fscCell}</td></tr>`;
