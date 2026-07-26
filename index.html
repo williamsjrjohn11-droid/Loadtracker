@@ -4400,7 +4400,7 @@ function exportPercentageDriverReport() {
   const to = toVal ? parseLocalDate(toVal) : null;
   if (to) to.setHours(23,59,59,999); // include the whole "to" day
 
-  const pctDriverNames = new Set((DB.drivers||[]).filter(d => (d.pay_mode||'').toLowerCase() === 'percentage').map(d => d.driver_name));
+  const pctDriverNames = new Set((DB.drivers||[]).filter(d => (d.pay_mode||'').toLowerCase() === 'percentage').map(d => d.name));
   if (!pctDriverNames.size) { showGlobalAlert('No percentage-pay drivers set up yet.', 'err'); return; }
 
   const loads = DB.tickets.filter(t => {
@@ -4416,7 +4416,7 @@ function exportPercentageDriverReport() {
   if (!loads.length) { showGlobalAlert('No percentage-driver loads found in that date range.', 'err'); return; }
 
   const driverByName = {};
-  (DB.drivers||[]).forEach(d => { driverByName[d.driver_name] = d; });
+  (DB.drivers||[]).forEach(d => { driverByName[d.name] = d; });
 
   const detailHeader = ['Driver','Date','Ticket #','Truck #','Pickup','Deliver','Tons','Original Rate ($/ton)','Original Amount','Pay %','Their Rate ($/ton)','Their Amount','Status'];
   const detailRows = [detailHeader];
