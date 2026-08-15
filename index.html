@@ -147,6 +147,15 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
 #truck-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;align-items:center;justify-content:center;padding:16px;}
 #truck-modal.open{display:flex;}
 #truck-modal-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;width:100%;max-width:400px;}
+#salary-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;align-items:center;justify-content:center;padding:16px;}
+#salary-modal.open{display:flex;}
+#salary-modal-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;width:100%;max-width:400px;}
+#salary-modal-title{font-family:'Barlow Condensed',sans-serif;font-size:18px;font-weight:700;margin-bottom:14px;}
+#salary-modal-total{font-family:'Barlow Condensed',sans-serif;font-size:20px;font-weight:700;color:var(--green);}
+#owner-draw-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;align-items:center;justify-content:center;padding:16px;}
+#owner-draw-modal.open{display:flex;}
+#owner-draw-modal-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;width:100%;max-width:400px;}
+#owner-draw-modal-title{font-family:'Barlow Condensed',sans-serif;font-size:18px;font-weight:700;margin-bottom:14px;}
 #driver-modal-title{font-family:'Barlow Condensed',sans-serif;font-size:18px;font-weight:700;margin-bottom:14px;}
 .driver-field{margin-bottom:12px;}
 .driver-field label{display:block;font-size:10px;color:var(--text2);text-transform:uppercase;margin-bottom:4px;}
@@ -226,6 +235,12 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
   #payout-fee-fsc-row{grid-template-columns:1fr !important;}
   #payout-bonus-fields{grid-template-columns:1fr !important;}
   #payout-modal-box{padding:14px;}
+  #salary-bonus-fields{grid-template-columns:1fr !important;}
+  #salary-modal-box{padding:14px;}
+  #owner-draw-modal-box{padding:14px;}
+}
+@media(max-width:420px){
+  #owner-draw-card .card > div:first-child{flex-direction:column;align-items:flex-start !important;}
 }
 </style>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -395,6 +410,7 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
       🚚 By default, each driver is paid the exact Amrize rate that load earned (the same rate shown on the ticket) — no need to set anything. If you ever want to pay a driver a flat $/ton instead (e.g. a negotiated rate), set <strong>rate_per_ton</strong> in the <strong>Drivers</strong> tab and it'll override the per-load rate for them. Payouts here are independent of the Amrize invoice — generate one whenever you're ready to pay a driver for their completed loads.
     </div>
     <div id="fleet-trucks-card"></div>
+    <div id="owner-draw-card"></div>
     <div id="driver-unpaid-list"></div>
     <div class="card">
       <div class="card-title">📜 Payout History</div>
@@ -630,7 +646,7 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
 <script>
 const KEY = 'loadtracker_v5';
 const AKEY = 'lt_apikey';
-let DB = { settlements: [], tickets: [], rates: [], drivers: [], driverSettlements: [], eaInvoices: [], fscRates: [], trucks: [] };
+let DB = { settlements: [], tickets: [], rates: [], drivers: [], driverSettlements: [], eaInvoices: [], fscRates: [], trucks: [], ownerDraws: [] };
 let _lastUsedDriver = '';
 let tFilter = 'all', sFilter = '', dFilter = '';
 let settFiles = [], ticketFiles = [];
@@ -1264,6 +1280,9 @@ async function syncLoad() {
     // Weekly FSC rates: cloud is source-of-truth
     DB.fscRates = Array.isArray(data.fscRates) ? data.fscRates : [];
     DB.fscRates.forEach(r => { if (r.week_start) r.week_start = cleanDate(r.week_start); });
+    // Owner draws: cloud is source-of-truth (generated/edited from this app only)
+    DB.ownerDraws = Array.isArray(data.ownerDraws) ? data.ownerDraws : [];
+    DB.ownerDraws.forEach(od => { if (od.week_ending) od.week_ending = cleanDate(od.week_ending); });
     
     if (data.settlements && data.settlements.length > 0) {
       // Replace local with cloud data — cloud is source of truth
@@ -2717,6 +2736,13 @@ function isPercentageDriver(driver) {
   return !!(driver && driver.pay_mode === 'percentage' && driver.pay_pct);
 }
 
+// True when a driver is paid a flat weekly salary — pay is NOT tied to tickets/loads at
+// all. Tickets still tag to them for records/reporting, but the payout math is bypassed
+// entirely in favor of a flat weekly amount.
+function isSalaryDriver(driver) {
+  return !!(driver && driver.pay_mode === 'salary');
+}
+
 function renderDash() {
   const ytd = DB.settlements.reduce((a, s) => a + parseFloat(s.net_total || 0), 0);
   const loads = DB.settlements.reduce((a, s) => a + (s.rows || []).length, 0);
@@ -3033,6 +3059,7 @@ function renderDriverPay() {
   const drivers = (DB.drivers||[]).filter(d => d.active);
 
   renderFleetTrucks();
+  renderOwnerDraws();
 
   const addBtnRow = `<div style="display:flex;justify-content:flex-end;margin-bottom:12px;"><button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="openDriverForm()">➕ Add Driver</button></div>`;
 
@@ -3040,9 +3067,10 @@ function renderDriverPay() {
     unpaidEl.innerHTML = addBtnRow + '<div class="card"><div class="empty"><span class="empty-icon">🚚</span>No active drivers yet — tap "Add Driver" above, or add one to the Drivers tab in the Sheet directly.</div></div>';
   } else {
     unpaidEl.innerHTML = addBtnRow + drivers.map(d => {
+      const salaryMode = isSalaryDriver(d);
       const unpaid = DB.tickets.filter(t => (t.business||'axelar')==='ea' && t.driver === d.name && !t.driver_settlement_id && !t.error);
       const tons = unpaid.reduce((a,t) => a + parseFloat(t.tons||0), 0);
-      const owed = unpaid.reduce((a,t) => a + parseFloat(t.tons||0) * driverPayRate(t, d), 0);
+      const owed = salaryMode ? parseFloat(d.weekly_salary||0) : unpaid.reduce((a,t) => a + parseFloat(t.tons||0) * driverPayRate(t, d), 0);
       const matchedCount = unpaid.filter(t => t.matched && !t.has_discrepancy).length;
       const discCount = unpaid.filter(t => t.has_discrepancy).length;
       const pendingCount = unpaid.length - matchedCount - discCount;
@@ -3050,22 +3078,28 @@ function renderDriverPay() {
       if (matchedCount) matchBits.push(`<span style="color:var(--green);">${matchedCount} matched</span>`);
       if (pendingCount) matchBits.push(`<span style="color:var(--amber);">${pendingCount} pending</span>`);
       if (discCount) matchBits.push(`<span style="color:var(--red);">${discCount} discrepanc${discCount===1?'y':'ies'}</span>`);
-      const rateLabel = isPercentageDriver(d) ? `${d.pay_pct}% of Amrize's rate (no FSC, no fee)` : d.rate_per_ton ? `$${d.rate_per_ton.toFixed(2)}/ton flat (override)` : `Amrize rate per load`;
+      const rateLabel = salaryMode ? `$${parseFloat(d.weekly_salary||0).toFixed(2)}/week salary` : isPercentageDriver(d) ? `${d.pay_pct}% of Amrize's rate (no FSC, no fee)` : d.rate_per_ton ? `$${d.rate_per_ton.toFixed(2)}/ton flat (override)` : `Amrize rate per load`;
       const avatar = d.photo_url
         ? `<img src="${driveThumbUrl(d.photo_url, 72)}" style="width:36px;height:36px;border-radius:50%;object-fit:cover;flex-shrink:0;border:1px solid var(--border);" alt="">`
         : `<div style="width:36px;height:36px;border-radius:50%;background:var(--surface2);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;">🚚</div>`;
+      // Salary drivers aren't gated by unpaid tickets — pay isn't tied to loads at all, so
+      // the button is always available and simply loads still tag to them for records.
+      const btnEnabled = salaryMode ? true : !!unpaid.length;
+      const metaLine = salaryMode
+        ? `${rateLabel}${unpaid.length ? ` &nbsp;·&nbsp; ${unpaid.length} load(s) hauled this period (for records only)` : ''}${d.truck_number?` &nbsp;·&nbsp; 🚛 ${d.truck_number}`:''}`
+        : `${rateLabel} &nbsp;·&nbsp; ${unpaid.length} unpaid load(s)${matchBits.length?` (${matchBits.join(', ')})`:''} &nbsp;·&nbsp; ${tons.toFixed(2)} tons${d.truck_number?` &nbsp;·&nbsp; 🚛 ${d.truck_number}`:''}`;
       return `<div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
           <div style="display:flex;align-items:center;gap:10px;">
             ${avatar}
             <div>
               <div style="font-weight:600;font-size:15px;">${d.name} <button onclick="openDriverForm('${d.name.replace(/'/g,"\\'")}')" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text3);padding:0;margin-left:4px;" title="Edit driver">✏️</button></div>
-              <div style="font-size:12px;color:var(--text2);">${rateLabel} &nbsp;·&nbsp; ${unpaid.length} unpaid load(s)${matchBits.length?` (${matchBits.join(', ')})`:''} &nbsp;·&nbsp; ${tons.toFixed(2)} tons${d.truck_number?` &nbsp;·&nbsp; 🚛 ${d.truck_number}`:''}</div>
+              <div style="font-size:12px;color:var(--text2);">${metaLine}</div>
             </div>
           </div>
           <div style="text-align:right;display:flex;align-items:center;gap:10px;">
-            <div><div style="font-family:'Barlow Condensed',sans-serif;font-size:20px;font-weight:700;color:var(--green);">${fmt$(owed)}</div><div style="font-size:11px;color:var(--text3);">owed</div></div>
-            <button class="btn btn-green btn-sm" ${unpaid.length ? '' : 'disabled'} onclick="generateDriverPayout('${d.name.replace(/'/g,"\\'")}')">💵 Generate Payout</button>
+            <div><div style="font-family:'Barlow Condensed',sans-serif;font-size:20px;font-weight:700;color:var(--green);">${fmt$(owed)}</div><div style="font-size:11px;color:var(--text3);">${salaryMode?'this week':'owed'}</div></div>
+            <button class="btn btn-green btn-sm" ${btnEnabled ? '' : 'disabled'} onclick="generateDriverPayout('${d.name.replace(/'/g,"\\'")}')">💵 ${salaryMode?'Generate Weekly Payout':'Generate Payout'}</button>
           </div>
         </div>
       </div>`;
@@ -3104,10 +3138,27 @@ function renderDriverPay() {
 
     const cardsHtml = list.map(ds => {
       const isPaid = ds.status === 'paid';
+      const salaryMode = ds.pay_type === 'salary';
+      const metaLine = salaryMode
+        ? `Weekly salary${ds.bonus_amount ? ' + bonus' : ''}`
+        : `${ds.ticket_count||(ds.ticket_ids||[]).length} loads &nbsp;·&nbsp; ${parseFloat(ds.total_tons||0).toFixed(2)} tons &nbsp;·&nbsp; avg $${parseFloat(ds.rate_per_ton||0).toFixed(2)}/ton`;
+      const bodyHtml = salaryMode
+        ? `<div style="padding:10px 12px;font-size:12px;color:var(--text2);">💵 Weekly Salary — ${fmt$(parseFloat(ds.total_amount||0) - parseFloat(ds.bonus_amount||0))}${ds.bonus_amount ? `<br>➕ Bonus${ds.bonus_note?` (${ds.bonus_note})`:''} — ${fmt$(ds.bonus_amount)}` : ''}</div>`
+        : `<div class="table-wrap"><table>
+          <thead><tr><th>Ticket #</th><th>Date</th><th>Route</th><th>Tons</th><th>Rate</th><th>Amount</th><th>Photo</th></tr></thead>
+          <tbody>${(ds.ticket_ids||[]).map(tn => {
+            const t = DB.tickets.find(x => String(x.ticket||'') === String(tn));
+            if (!t) return `<tr><td class="mono">${tn}</td><td colspan="6" style="color:var(--text3);">— ticket record not found —</td></tr>`;
+            const driverRec = (DB.drivers||[]).find(x => x.name === ds.driver);
+            const rate = driverPayRate(t, driverRec);
+            const photoBtn = t.photo_url ? `<a href="#" onclick="viewPhoto('${t.photo_url}');return false;" style="text-decoration:none;" title="View photo">📷</a>` : '—';
+            return `<tr><td class="mono">${t.ticket||'—'}</td><td style="font-size:12px;">${cleanDate(t.date)||'—'}</td><td style="font-size:12px;">${t.pickup||''}→${t.deliver||''}</td><td>${parseFloat(t.tons||0).toFixed(2)}</td><td>$${rate.toFixed(2)}</td><td>${fmt$(parseFloat(t.tons||0)*rate)}</td><td>${photoBtn}</td></tr>`;
+          }).join('')}</tbody>
+        </table></div>`;
       return `<div class="sett-card">
         <div class="sett-header" style="cursor:pointer;" onclick="toggleDriverSett('${ds.id}')">
           <div><div class="sett-name">${ds.settlement_number?ds.settlement_number+' — ':''}${ds.driver} — ${cleanDate(ds.period_start)||'?'} to ${cleanDate(ds.period_end)||'?'} <span class="badge ${isPaid?'badge-green':'badge-amber'}" style="margin-left:6px;">${isPaid?'✓ Paid':'⏳ Unpaid'}</span></div>
-            <div class="sett-meta">${ds.ticket_count||(ds.ticket_ids||[]).length} loads &nbsp;·&nbsp; ${parseFloat(ds.total_tons||0).toFixed(2)} tons &nbsp;·&nbsp; avg $${parseFloat(ds.rate_per_ton||0).toFixed(2)}/ton</div>
+            <div class="sett-meta">${metaLine}</div>
           </div>
           <div style="text-align:right;margin-left:12px;display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;max-width:100%;">
             <div>
@@ -3122,17 +3173,7 @@ function renderDriverPay() {
             <button class="sett-toggle" id="toggle-${ds.id}" onclick="event.stopPropagation();toggleDriverSett('${ds.id}')">▼</button>
           </div>
         </div>
-        <div class="sett-body" id="body-${ds.id}"><div class="table-wrap"><table>
-          <thead><tr><th>Ticket #</th><th>Date</th><th>Route</th><th>Tons</th><th>Rate</th><th>Amount</th><th>Photo</th></tr></thead>
-          <tbody>${(ds.ticket_ids||[]).map(tn => {
-            const t = DB.tickets.find(x => String(x.ticket||'') === String(tn));
-            if (!t) return `<tr><td class="mono">${tn}</td><td colspan="6" style="color:var(--text3);">— ticket record not found —</td></tr>`;
-            const driverRec = (DB.drivers||[]).find(x => x.name === ds.driver);
-            const rate = driverPayRate(t, driverRec);
-            const photoBtn = t.photo_url ? `<a href="#" onclick="viewPhoto('${t.photo_url}');return false;" style="text-decoration:none;" title="View photo">📷</a>` : '—';
-            return `<tr><td class="mono">${t.ticket||'—'}</td><td style="font-size:12px;">${cleanDate(t.date)||'—'}</td><td style="font-size:12px;">${t.pickup||''}→${t.deliver||''}</td><td>${parseFloat(t.tons||0).toFixed(2)}</td><td>$${rate.toFixed(2)}</td><td>${fmt$(parseFloat(t.tons||0)*rate)}</td><td>${photoBtn}</td></tr>`;
-          }).join('')}</tbody>
-        </table></div></div>
+        <div class="sett-body" id="body-${ds.id}">${bodyHtml}</div>
       </div>`;
     }).join('');
 
@@ -3175,6 +3216,99 @@ function toggleDriverFolder(safeId) {
   if (btn) btn.classList.toggle('open', !isOpen);
 }
 
+// ─── OWNER DRAW (your own weekly draw — not tied to tickets/loads at all) ───
+function renderOwnerDraws() {
+  const el = document.getElementById('owner-draw-card');
+  if (!el) return;
+  const draws = [...(DB.ownerDraws||[])].sort((a,b) => new Date(b.week_ending||b.created_at||0) - new Date(a.week_ending||a.created_at||0));
+  const unpaidTotal = draws.filter(x => x.status !== 'paid').reduce((a,x) => a + parseFloat(x.amount||0), 0);
+  const rows = draws.map(od => {
+    const isPaid = od.status === 'paid';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:120px;">
+        <div style="font-weight:600;">Week ending ${cleanDate(od.week_ending)||'—'} <span class="badge ${isPaid?'badge-green':'badge-amber'}" style="margin-left:4px;">${isPaid?'✓ Paid':'⏳ Unpaid'}</span></div>
+        ${od.notes ? `<div style="color:var(--text3);font-size:11px;">${od.notes.replace(/</g,'&lt;')}</div>` : ''}
+      </div>
+      <div style="font-weight:700;color:var(--green);flex-shrink:0;">${fmt$(od.amount)}</div>
+      <div style="display:flex;gap:6px;flex-shrink:0;">
+        ${isPaid ? '' : `<button class="btn btn-sm btn-green" onclick="markOwnerDrawPaid('${od.id}')">✓ Mark Paid</button>`}
+        <button onclick="openOwnerDrawForm('${od.id}')" style="background:none;border:none;cursor:pointer;color:var(--text3);padding:0;" title="Edit draw">✏️</button>
+        <button onclick="deleteOwnerDrawForm('${od.id}')" style="background:none;border:none;cursor:pointer;color:var(--red);padding:0;" title="Delete draw">🗑</button>
+      </div>
+    </div>`;
+  }).join('');
+  el.innerHTML = `<div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
+      <div class="card-title" style="margin:0;">🏦 Owner Draw</div>
+      <div style="display:flex;align-items:center;gap:10px;">
+        ${unpaidTotal ? `<div style="font-size:12px;color:var(--amber);">${fmt$(unpaidTotal)} unpaid</div>` : ''}
+        <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="openOwnerDrawForm()">➕ Add Draw</button>
+      </div>
+    </div>
+    ${draws.length ? rows : '<div style="font-size:12px;color:var(--text3);">No owner draws recorded yet — this is your own weekly pay, tracked separately from driver payouts.</div>'}
+  </div>`;
+}
+
+function openOwnerDrawForm(id) {
+  const od = id ? (DB.ownerDraws||[]).find(x => x.id === id) : null;
+  document.getElementById('owner-draw-modal-title').textContent = od ? '🏦 Edit Owner Draw' : '🏦 Add Owner Draw';
+  document.getElementById('owner-draw-form-id').value = od ? od.id : '';
+  if (od) {
+    document.getElementById('owner-draw-form-week').value = od.week_ending || '';
+  } else {
+    const range = defaultLastWeekRange();
+    document.getElementById('owner-draw-form-week').value = range.end;
+  }
+  document.getElementById('owner-draw-form-amount').value = od ? od.amount : '';
+  document.getElementById('owner-draw-form-notes').value = od ? (od.notes||'') : '';
+  document.getElementById('owner-draw-delete-btn').style.display = od ? 'inline-block' : 'none';
+  document.getElementById('owner-draw-modal').classList.add('open');
+}
+
+function closeOwnerDrawModal() {
+  document.getElementById('owner-draw-modal').classList.remove('open');
+}
+
+async function saveOwnerDrawForm() {
+  const id = document.getElementById('owner-draw-form-id').value || ('od_' + Date.now() + '_' + Math.random().toString(36).slice(2,6));
+  const weekEnding = document.getElementById('owner-draw-form-week').value;
+  const amount = parseFloat(document.getElementById('owner-draw-form-amount').value) || 0;
+  const notes = document.getElementById('owner-draw-form-notes').value.trim();
+  if (!weekEnding) { showGlobalAlert('⚠ Enter a week-ending date.', 'err'); return; }
+  if (!amount) { showGlobalAlert('⚠ Enter a draw amount.', 'err'); return; }
+
+  const existing = (DB.ownerDraws||[]).find(x => x.id === id);
+  const draw = existing
+    ? { ...existing, week_ending: weekEnding, amount, notes }
+    : { id, week_ending: weekEnding, amount, notes, status: 'unpaid', paid_date: '', created_at: new Date().toISOString() };
+  if (existing) { Object.assign(existing, draw); } else { DB.ownerDraws.push(draw); }
+  save(); renderAll();
+  closeOwnerDrawModal();
+  await gasPost({action: 'saveOwnerDraw', draw});
+  showGlobalAlert(`✅ ${existing ? 'Updated' : 'Added'} owner draw — ${fmt$(amount)}`, 'ok');
+}
+
+async function markOwnerDrawPaid(id) {
+  const od = (DB.ownerDraws||[]).find(x => x.id === id);
+  if (!od) return;
+  od.status = 'paid';
+  od.paid_date = new Date().toISOString().slice(0,10);
+  save(); renderAll();
+  await gasPost({action: 'saveOwnerDraw', draw: od});
+  showGlobalAlert(`✅ Marked paid — ${fmt$(od.amount)}`, 'ok');
+}
+
+async function deleteOwnerDrawForm(id) {
+  const drawId = id || document.getElementById('owner-draw-form-id').value;
+  if (!drawId) return;
+  if (!confirm('Delete this owner draw record?')) return;
+  DB.ownerDraws = (DB.ownerDraws||[]).filter(x => x.id !== drawId);
+  save(); renderAll();
+  closeOwnerDrawModal();
+  await gasPost({action: 'deleteOwnerDraw', id: drawId});
+  showGlobalAlert('🗑 Owner draw deleted.', 'ok');
+}
+
 // ─── ADD/EDIT DRIVER ───────────────────────────────────────────
 function openDriverForm(existingName) {
   const d = existingName ? (DB.drivers||[]).find(x => x.name === existingName) : null;
@@ -3186,6 +3320,7 @@ function openDriverForm(existingName) {
   document.getElementById('driver-form-paymode').value = payMode;
   document.getElementById('driver-form-rate').value = d && d.rate_per_ton ? d.rate_per_ton : '';
   document.getElementById('driver-form-pct').value = d && d.pay_pct ? d.pay_pct : '';
+  document.getElementById('driver-form-salary').value = d && d.weekly_salary ? d.weekly_salary : '';
   toggleDriverPayModeFields();
   document.getElementById('driver-form-truck').value = d ? (d.truck_number||'') : '';
   document.getElementById('driver-form-notes').value = d ? (d.notes||'') : '';
@@ -3239,6 +3374,7 @@ function toggleDriverPayModeFields() {
   const mode = document.getElementById('driver-form-paymode').value;
   document.getElementById('driver-form-rate-wrap').style.display = mode === 'flat' ? 'block' : 'none';
   document.getElementById('driver-form-pct-wrap').style.display = mode === 'percentage' ? 'block' : 'none';
+  document.getElementById('driver-form-salary-wrap').style.display = mode === 'salary' ? 'block' : 'none';
 }
 
 function closeDriverModal() {
@@ -3277,6 +3413,7 @@ async function saveDriverForm() {
   const payMode = document.getElementById('driver-form-paymode').value;
   const rate = parseFloat(document.getElementById('driver-form-rate').value) || 0;
   const pct = parseFloat(document.getElementById('driver-form-pct').value) || 0;
+  const salary = parseFloat(document.getElementById('driver-form-salary').value) || 0;
   const truck = document.getElementById('driver-form-truck').value.trim().toUpperCase();
   const notes = document.getElementById('driver-form-notes').value.trim();
   const active = document.getElementById('driver-form-active').checked;
@@ -3284,6 +3421,7 @@ async function saveDriverForm() {
 
   if (payMode === 'percentage' && !pct) { showGlobalAlert('⚠ Enter a percentage for this pay method.', 'err'); return; }
   if (payMode === 'flat' && !rate) { showGlobalAlert('⚠ Enter a flat $/ton rate for this pay method.', 'err'); return; }
+  if (payMode === 'salary' && !salary) { showGlobalAlert('⚠ Enter a weekly salary amount for this pay method.', 'err'); return; }
 
   const driver = {
     name, orig_name: origName,
@@ -3291,6 +3429,7 @@ async function saveDriverForm() {
     pay_mode: payMode,
     rate_per_ton: payMode === 'flat' ? rate : 0,
     pay_pct: payMode === 'percentage' ? pct : 0,
+    weekly_salary: payMode === 'salary' ? salary : 0,
     truck_number: truck, notes,
     photo_url: photoUrl
   };
@@ -3424,6 +3563,7 @@ let _editingDriverSettlementId = null;
 function generateDriverPayout(driverName) {
   const d = (DB.drivers||[]).find(x => x.name === driverName);
   if (!d) { showGlobalAlert('⚠ Driver not found.', 'err'); return; }
+  if (isSalaryDriver(d)) { generateSalaryPayout(driverName); return; }
   const unpaid = DB.tickets.filter(t => (t.business||'axelar')==='ea' && t.driver === driverName && !t.driver_settlement_id && !t.error);
   if (!unpaid.length) { showGlobalAlert('Nothing unpaid for ' + driverName + '.', 'ok'); return; }
 
@@ -3470,6 +3610,7 @@ let _payoutFSCPrefill = {};
 function editDriverPayout(id) {
   const ds = (DB.driverSettlements||[]).find(x => x.id === id);
   if (!ds) return;
+  if (ds.pay_type === 'salary') { editSalaryPayout(id); return; }
   if (ds.status !== 'unpaid') {
     if (!confirm(`${ds.settlement_number||ds.id} is marked "${ds.status}" — the driver may already have this statement. Editing now won't un-pay it, just correct your records. Continue?`)) return;
   }
@@ -3554,6 +3695,136 @@ function renderPayoutList() {
     </div>`;
   }).join('');
   updatePayoutTotal();
+}
+
+// ─── SALARY PAYOUT (flat weekly pay, no ticket math) ───────────────────────
+let _salaryPreviewDriver = null;
+let _editingSalarySettlementId = null;
+
+function defaultLastWeekRange() {
+  // Most recently completed Mon–Sun week, as a sensible default for a weekly salary run.
+  const todayMon = getMondayOfWeek(new Date().toISOString().slice(0,10));
+  const thisMon = parseLocalDate(todayMon);
+  const lastMon = new Date(thisMon); lastMon.setDate(thisMon.getDate() - 7);
+  const lastSun = new Date(thisMon); lastSun.setDate(thisMon.getDate() - 1);
+  const fmt = (dt) => { const y=dt.getFullYear(), m=String(dt.getMonth()+1).padStart(2,'0'), d=String(dt.getDate()).padStart(2,'0'); return `${y}-${m}-${d}`; };
+  return { start: fmt(lastMon), end: fmt(lastSun) };
+}
+
+function generateSalaryPayout(driverName) {
+  const d = (DB.drivers||[]).find(x => x.name === driverName);
+  if (!d) { showGlobalAlert('⚠ Driver not found.', 'err'); return; }
+  _editingSalarySettlementId = null;
+  _salaryPreviewDriver = driverName;
+  const range = defaultLastWeekRange();
+  document.getElementById('salary-modal-title').textContent = `💵 Weekly Salary — ${driverName}`;
+  document.getElementById('salary-generate-btn').textContent = '✅ Generate Payout';
+  document.getElementById('salary-period-start').value = range.start;
+  document.getElementById('salary-period-end').value = range.end;
+  document.getElementById('salary-amount').value = parseFloat(d.weekly_salary||0).toFixed(2);
+  document.getElementById('salary-bonus-toggle').checked = false;
+  document.getElementById('salary-bonus-amt').value = 0;
+  document.getElementById('salary-bonus-note').value = '';
+  document.getElementById('salary-bonus-fields').style.display = 'none';
+  updateSalaryTotal();
+  document.getElementById('salary-modal').classList.add('open');
+}
+
+function editSalaryPayout(id) {
+  const ds = (DB.driverSettlements||[]).find(x => x.id === id);
+  if (!ds) return;
+  if (ds.status !== 'unpaid') {
+    if (!confirm(`${ds.settlement_number||ds.id} is marked "${ds.status}" — the driver may already have this statement. Editing now won't un-pay it, just correct your records. Continue?`)) return;
+  }
+  _editingSalarySettlementId = id;
+  _salaryPreviewDriver = ds.driver;
+  document.getElementById('salary-modal-title').textContent = `✏️ Edit ${ds.settlement_number||'Payout'} — ${ds.driver}`;
+  document.getElementById('salary-generate-btn').textContent = '✅ Save Changes';
+  document.getElementById('salary-period-start').value = ds.period_start || '';
+  document.getElementById('salary-period-end').value = ds.period_end || '';
+  const baseSalary = parseFloat(ds.total_amount||0) - parseFloat(ds.bonus_amount||0);
+  document.getElementById('salary-amount').value = baseSalary.toFixed(2);
+  const hasBonus = !!(ds.bonus_amount && parseFloat(ds.bonus_amount) !== 0);
+  document.getElementById('salary-bonus-toggle').checked = hasBonus;
+  document.getElementById('salary-bonus-amt').value = ds.bonus_amount || 0;
+  document.getElementById('salary-bonus-note').value = ds.bonus_note || '';
+  document.getElementById('salary-bonus-fields').style.display = hasBonus ? 'grid' : 'none';
+  updateSalaryTotal();
+  document.getElementById('salary-modal').classList.add('open');
+}
+
+function toggleSalaryBonusFields() {
+  const on = document.getElementById('salary-bonus-toggle').checked;
+  document.getElementById('salary-bonus-fields').style.display = on ? 'grid' : 'none';
+  if (!on) { document.getElementById('salary-bonus-amt').value = 0; document.getElementById('salary-bonus-note').value = ''; }
+  updateSalaryTotal();
+}
+
+function updateSalaryTotal() {
+  const amount = parseFloat(document.getElementById('salary-amount').value) || 0;
+  const bonus = parseFloat(document.getElementById('salary-bonus-amt').value) || 0;
+  document.getElementById('salary-modal-total').textContent = fmt$(amount + bonus);
+}
+
+function closeSalaryModal() {
+  document.getElementById('salary-modal').classList.remove('open');
+  _salaryPreviewDriver = null;
+  _editingSalarySettlementId = null;
+}
+
+async function confirmSalaryPayout() {
+  const driverName = _salaryPreviewDriver;
+  const d = (DB.drivers||[]).find(x => x.name === driverName);
+  if (!d) { closeSalaryModal(); return; }
+  const periodStart = document.getElementById('salary-period-start').value;
+  const periodEnd = document.getElementById('salary-period-end').value;
+  const amount = parseFloat(document.getElementById('salary-amount').value) || 0;
+  const bonusAmt = parseFloat(document.getElementById('salary-bonus-amt').value) || 0;
+  const bonusNote = document.getElementById('salary-bonus-note').value || '';
+  if (!periodStart || !periodEnd) { showGlobalAlert('⚠ Enter a period start and end date.', 'err'); return; }
+  if (!amount) { showGlobalAlert('⚠ Enter a salary amount.', 'err'); return; }
+  const total = amount + bonusAmt;
+
+  let ds;
+  if (_editingSalarySettlementId) {
+    ds = (DB.driverSettlements||[]).find(x => x.id === _editingSalarySettlementId);
+    if (!ds) { showGlobalAlert('⚠ Settlement not found.', 'err'); return; }
+    ds.period_start = periodStart;
+    ds.period_end = periodEnd;
+    ds.total_amount = total;
+    ds.bonus_amount = bonusAmt;
+    ds.bonus_note = bonusNote;
+  } else {
+    ds = {
+      id: 'ds_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
+      settlement_number: nextDriverSettlementNumberLocal(driverName),
+      driver: driverName,
+      period_start: periodStart,
+      period_end: periodEnd,
+      ticket_ids: [],
+      ticket_count: 0,
+      total_tons: 0,
+      rate_per_ton: 0,
+      total_amount: total,
+      fsc_amt: 0,
+      fsc_details: {},
+      broker_fee_pct: 0,
+      broker_fee_amt: 0,
+      bonus_amount: bonusAmt,
+      bonus_note: bonusNote,
+      status: 'unpaid',
+      paid_date: '',
+      created_at: new Date().toISOString(),
+      pay_type: 'salary'
+    };
+    DB.driverSettlements.push(ds);
+  }
+  save(); renderAll();
+  const wasEditing = !!_editingSalarySettlementId;
+  closeSalaryModal();
+  await gasPost({action: 'saveDriverSettlement', driverSettlement: {...ds, fsc_details: JSON.stringify(ds.fsc_details||{})}});
+  showGlobalAlert(`✅ Salary payout ${wasEditing?'updated':'generated'} for ${driverName} — ${fmt$(total)}`, 'ok');
+  printDriverSettlement(ds.id);
 }
 
 function toggleBonusFields() {
@@ -4437,6 +4708,7 @@ function computeDriverYTD(ds) {
 function renderDriverSettlementDoc(ds, isPreview) {
   const s = loadInvoiceSettings();
   const fmt = (n) => '$'+parseFloat(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const salaryMode = ds.pay_type === 'salary';
   const rows = (ds.ticket_ids||[]).map(tn => DB.tickets.find(x => String(x.ticket||'')===String(tn))).filter(Boolean);
   const d = (DB.drivers||[]).find(x => x.name === ds.driver);
   const printDate = new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
@@ -4450,7 +4722,10 @@ function renderDriverSettlementDoc(ds, isPreview) {
   // the fee never touches the fuel surcharge.
   const afterFee = subtotal - feeAmt;
   const bonusAmt = parseFloat(ds.bonus_amount||0);
-  const amountOwed = afterFee + fscAmt + bonusAmt;
+  // For a salary settlement, total_amount already IS the base weekly salary + bonus (there's
+  // no per-load subtotal to derive it from), so back out the base salary for display.
+  const salaryBase = salaryMode ? (parseFloat(ds.total_amount||0) - bonusAmt) : 0;
+  const amountOwed = salaryMode ? parseFloat(ds.total_amount||0) : (afterFee + fscAmt + bonusAmt);
   const docLabel = isPreview ? 'PREVIEW' : (ds.settlement_number || ds.id);
   const ytd = computeDriverYTD(ds);
 
@@ -4507,7 +4782,7 @@ ${isPreview ? '<div class="preview-banner">⚠ PREVIEW ONLY — this settlement 
     <div><strong>№</strong> ${docLabel}</div>
     <div><strong>Date:</strong> ${printDate}</div>
     <div><strong>Period:</strong> ${ds.period_start||'?'} – ${ds.period_end||'?'}</div>
-    <div><strong>Loads:</strong> ${rows.length}</div>
+    <div><strong>Loads:</strong> ${salaryMode ? 'Weekly Salary' : rows.length}</div>
   </div>
 </div>
 
@@ -4524,6 +4799,7 @@ ${isPreview ? '<div class="preview-banner">⚠ PREVIEW ONLY — this settlement 
   </div>
 </div>
 
+${salaryMode ? '' : `
 <div style="overflow-x:auto;">
 <table>
 <thead><tr><th>#</th><th>Date</th><th>Ticket #</th><th>Truck #</th><th>Pickup</th><th>Deliver</th><th>Tons</th>${isPercentageDriver(d) ? '' : '<th>Rate</th>'}<th>Total</th>${isPercentageDriver(d) ? '' : '<th>FSC</th>'}</tr></thead>
@@ -4537,10 +4813,16 @@ ${rows.map((t,i) => {
 }).join('')}
 </tbody>
 </table>
-</div>
+</div>`}
 
 <div class="math-box">
   <div class="math-row checkdate"><span>${ds.status==='paid'?'PAID DATE':'SETTLEMENT DATE'}</span><span>${ds.status==='paid'&&ds.paid_date?ds.paid_date:printDate}</span></div>
+  ${salaryMode ? `
+  <div class="math-row"><span>Weekly Salary</span><span>${fmt(salaryBase)}</span></div>
+  ${bonusAmt ? `<div class="math-row"><span>Bonus${ds.bonus_note?` (${ds.bonus_note})`:''}</span><span>+${fmt(bonusAmt)}</span></div>` : ''}
+  <div class="math-row final"><span>AMOUNT OWED</span><span>${fmt(amountOwed)}</span></div>
+  <div class="math-row" style="border-top:1px solid #e5e7eb;margin-top:6px;padding-top:8px;"><span>${new Date().getFullYear()} YTD (${ds.driver})</span><span>${fmt(ytd)}</span></div>
+  ` : `
   <div class="math-row"><span>Subtotal</span><span>${fmt(subtotal)}</span></div>
   ${isPercentageDriver(d) ? '' : `
   <div class="math-row"><span>Broker Fee${feePct?` (${feePct}%)`:''}</span><span>-${fmt(feeAmt)}</span></div>
@@ -4549,6 +4831,7 @@ ${rows.map((t,i) => {
   ${bonusAmt ? `<div class="math-row"><span>Bonus${ds.bonus_note?` (${ds.bonus_note})`:''}</span><span>+${fmt(bonusAmt)}</span></div>` : ''}
   <div class="math-row final"><span>AMOUNT OWED</span><span>${fmt(amountOwed)}</span></div>
   <div class="math-row" style="border-top:1px solid #e5e7eb;margin-top:6px;padding-top:8px;"><span>${new Date().getFullYear()} YTD (${ds.driver})</span><span>${fmt(ytd)}</span></div>
+  `}
 </div>
 
 <div class="footer">
@@ -5530,6 +5813,45 @@ if ('serviceWorker' in navigator) {
   </div>
 </div>
 
+<div id="salary-modal">
+  <div id="salary-modal-box">
+    <div id="salary-modal-title">💵 Weekly Salary</div>
+    <div class="driver-field">
+      <label>Period Start</label>
+      <input type="date" id="salary-period-start">
+    </div>
+    <div class="driver-field">
+      <label>Period End</label>
+      <input type="date" id="salary-period-end">
+    </div>
+    <div class="driver-field">
+      <label>Salary Amount ($)</label>
+      <input type="number" step="0.01" id="salary-amount" oninput="updateSalaryTotal()">
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin:10px 0 0;">
+      <input type="checkbox" id="salary-bonus-toggle" onchange="toggleSalaryBonusFields()" style="width:16px;height:16px;accent-color:var(--green);">
+      <label for="salary-bonus-toggle" style="font-size:13px;font-weight:600;cursor:pointer;">Include a bonus</label>
+    </div>
+    <div id="salary-bonus-fields" style="display:none;grid-template-columns:1fr 2fr;gap:10px;margin:8px 0 10px;">
+      <div class="invoice-field" style="margin-bottom:0;">
+        <label>Bonus $</label>
+        <input type="number" step="0.01" id="salary-bonus-amt" value="0" placeholder="0.00" oninput="updateSalaryTotal()">
+      </div>
+      <div class="invoice-field" style="margin-bottom:0;">
+        <label>Bonus note (shows on settlement)</label>
+        <input type="text" id="salary-bonus-note" placeholder="e.g. Holiday bonus...">
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div><div id="salary-modal-total">$0.00</div><div style="font-size:11px;color:var(--text3);">total for this payout</div></div>
+      <div id="payout-modal-actions">
+        <button class="btn" onclick="closeSalaryModal()">Cancel</button>
+        <button class="btn btn-green" id="salary-generate-btn" onclick="confirmSalaryPayout()">✅ Generate Payout</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="fsc-import-modal">
   <div id="fsc-import-modal-box">
     <div class="invoice-modal-title">📋 Import FSC% from Amrize Email</div>
@@ -5603,6 +5925,7 @@ if ('serviceWorker' in navigator) {
         <option value="amrize">Amrize rate per load (default — gets full FSC)</option>
         <option value="flat">Flat $/ton, every load (still gets full FSC)</option>
         <option value="percentage">Percentage of Amrize's rate (no FSC, no broker fee — their full cut)</option>
+        <option value="salary">Weekly salary (flat pay — replaces per-load math entirely)</option>
       </select>
     </div>
     <div class="driver-field" id="driver-form-rate-wrap">
@@ -5613,6 +5936,11 @@ if ('serviceWorker' in navigator) {
       <label>Percentage of Amrize's Rate (%)</label>
       <input type="number" step="0.01" inputmode="decimal" id="driver-form-pct" placeholder="e.g. 30">
       <div style="font-size:11px;color:var(--text3);margin-top:4px;">If Amrize pays $9.80/ton and this is 30%, the driver gets $2.94/ton. No fuel surcharge, no broker fee taken out on top — this % is their whole cut.</div>
+    </div>
+    <div class="driver-field" id="driver-form-salary-wrap" style="display:none;">
+      <label>Weekly Salary ($)</label>
+      <input type="number" step="0.01" inputmode="decimal" id="driver-form-salary" placeholder="e.g. 1200.00">
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">Flat pay per week, regardless of loads hauled. Tickets still tag to this driver for your own records, but they won't drive the pay number.</div>
     </div>
     <div class="driver-field">
       <label>Truck Number — auto-matches this driver when scanning</label>
@@ -5664,6 +5992,30 @@ if ('serviceWorker' in navigator) {
       <button class="btn btn-red" id="truck-delete-btn" style="display:none;margin-right:auto;" onclick="deleteTruckForm()">🗑 Remove</button>
       <button class="btn" onclick="closeTruckModal()">Cancel</button>
       <button class="btn btn-green" onclick="saveTruckForm()">✅ Save Truck</button>
+    </div>
+  </div>
+</div>
+
+<div id="owner-draw-modal">
+  <div id="owner-draw-modal-box">
+    <div id="owner-draw-modal-title">🏦 Add Owner Draw</div>
+    <input type="hidden" id="owner-draw-form-id">
+    <div class="driver-field">
+      <label>Week Ending</label>
+      <input type="date" id="owner-draw-form-week">
+    </div>
+    <div class="driver-field">
+      <label>Amount ($)</label>
+      <input type="number" step="0.01" id="owner-draw-form-amount" placeholder="e.g. 1000.00">
+    </div>
+    <div class="driver-field">
+      <label>Notes (optional)</label>
+      <input type="text" id="owner-draw-form-notes" placeholder="">
+    </div>
+    <div id="driver-modal-actions">
+      <button class="btn btn-red" id="owner-draw-delete-btn" style="display:none;margin-right:auto;" onclick="deleteOwnerDrawForm()">🗑 Delete</button>
+      <button class="btn" onclick="closeOwnerDrawModal()">Cancel</button>
+      <button class="btn btn-green" onclick="saveOwnerDrawForm()">✅ Save Draw</button>
     </div>
   </div>
 </div>
