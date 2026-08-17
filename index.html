@@ -3139,12 +3139,11 @@ function renderDriverPay() {
     const cardsHtml = list.map(ds => {
       const isPaid = ds.status === 'paid';
       const salaryMode = ds.pay_type === 'salary';
+      const hasHistoricalLoads = salaryMode && (ds.ticket_ids||[]).length > 0;
       const metaLine = salaryMode
-        ? `Weekly salary${ds.bonus_amount ? ' + bonus' : ''}`
+        ? `Weekly salary${ds.bonus_amount ? ' + bonus' : ''}${hasHistoricalLoads ? ` &nbsp;·&nbsp; ${ds.ticket_count||(ds.ticket_ids||[]).length} load(s) on record (${parseFloat(ds.total_tons||0).toFixed(2)} tons — not used for pay)` : ''}`
         : `${ds.ticket_count||(ds.ticket_ids||[]).length} loads &nbsp;·&nbsp; ${parseFloat(ds.total_tons||0).toFixed(2)} tons &nbsp;·&nbsp; avg $${parseFloat(ds.rate_per_ton||0).toFixed(2)}/ton`;
-      const bodyHtml = salaryMode
-        ? `<div style="padding:10px 12px;font-size:12px;color:var(--text2);">💵 Weekly Salary — ${fmt$(parseFloat(ds.total_amount||0) - parseFloat(ds.bonus_amount||0))}${ds.bonus_amount ? `<br>➕ Bonus${ds.bonus_note?` (${ds.bonus_note})`:''} — ${fmt$(ds.bonus_amount)}` : ''}</div>`
-        : `<div class="table-wrap"><table>
+      const ticketTableHtml = (ds.ticket_ids||[]).length ? `<div class="table-wrap"><table>
           <thead><tr><th>Ticket #</th><th>Date</th><th>Route</th><th>Tons</th><th>Rate</th><th>Amount</th><th>Photo</th></tr></thead>
           <tbody>${(ds.ticket_ids||[]).map(tn => {
             const t = DB.tickets.find(x => String(x.ticket||'') === String(tn));
@@ -3154,7 +3153,10 @@ function renderDriverPay() {
             const photoBtn = t.photo_url ? `<a href="#" onclick="viewPhoto('${t.photo_url}');return false;" style="text-decoration:none;" title="View photo">📷</a>` : '—';
             return `<tr><td class="mono">${t.ticket||'—'}</td><td style="font-size:12px;">${cleanDate(t.date)||'—'}</td><td style="font-size:12px;">${t.pickup||''}→${t.deliver||''}</td><td>${parseFloat(t.tons||0).toFixed(2)}</td><td>$${rate.toFixed(2)}</td><td>${fmt$(parseFloat(t.tons||0)*rate)}</td><td>${photoBtn}</td></tr>`;
           }).join('')}</tbody>
-        </table></div>`;
+        </table></div>` : '';
+      const bodyHtml = salaryMode
+        ? `<div style="padding:10px 12px;font-size:12px;color:var(--text2);">💵 Weekly Salary — ${fmt$(parseFloat(ds.total_amount||0) - parseFloat(ds.bonus_amount||0))}${ds.bonus_amount ? `<br>➕ Bonus${ds.bonus_note?` (${ds.bonus_note})`:''} — ${fmt$(ds.bonus_amount)}` : ''}${hasHistoricalLoads ? `<br><br><span style="color:var(--text3);">📋 Loads on record for this period (for reference only — not what pay is based on):</span>` : ''}</div>${hasHistoricalLoads ? ticketTableHtml : ''}`
+        : ticketTableHtml;
       return `<div class="sett-card">
         <div class="sett-header" style="cursor:pointer;" onclick="toggleDriverSett('${ds.id}')">
           <div><div class="sett-name">${ds.settlement_number?ds.settlement_number+' — ':''}${ds.driver} — ${cleanDate(ds.period_start)||'?'} to ${cleanDate(ds.period_end)||'?'} <span class="badge ${isPaid?'badge-green':'badge-amber'}" style="margin-left:6px;">${isPaid?'✓ Paid':'⏳ Unpaid'}</span></div>
@@ -3166,6 +3168,7 @@ function renderDriverPay() {
               <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px;flex-wrap:wrap;" onclick="event.stopPropagation()">
                 <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="printDriverSettlement('${ds.id}')">🖨️ Print</button>
                 <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="editDriverPayout('${ds.id}')">✏️ Edit</button>
+                ${(!salaryMode && !isPaid) ? `<button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="convertSettlementToSalary('${ds.id}')" title="Keep the loads on record, but pay a flat salary amount instead">🔄 Convert to Salary</button>` : ''}
                 ${isPaid ? '' : `<button class="btn btn-sm btn-green" onclick="markDriverPayoutPaid('${ds.id}')">✓ Mark Paid</button>`}
                 <button class="btn btn-sm btn-red" onclick="deleteDriverPayout('${ds.id}')">🗑</button>
               </div>
@@ -3700,6 +3703,7 @@ function renderPayoutList() {
 // ─── SALARY PAYOUT (flat weekly pay, no ticket math) ───────────────────────
 let _salaryPreviewDriver = null;
 let _editingSalarySettlementId = null;
+let _convertingToSalary = false; // true when editSalaryPayout modal is being used to convert an existing per-load settlement, not edit an existing salary one
 
 function defaultLastWeekRange() {
   // Most recently completed Mon–Sun week, as a sensible default for a weekly salary run.
@@ -3753,11 +3757,68 @@ function editSalaryPayout(id) {
   document.getElementById('salary-modal').classList.add('open');
 }
 
+function convertSettlementToSalary(id) {
+  const ds = (DB.driverSettlements||[]).find(x => x.id === id);
+  if (!ds) return;
+  if (ds.pay_type === 'salary') { editSalaryPayout(id); return; }
+  const loadCount = ds.ticket_count || (ds.ticket_ids||[]).length;
+  if (!confirm(`Convert ${ds.settlement_number||ds.id} to a salary settlement?\n\nThe ${loadCount} load(s) and ${parseFloat(ds.total_tons||0).toFixed(2)} tons stay on the record for your own reference, but Amount Owed will switch from the per-load total to a flat salary figure.`)) return;
+  const d = (DB.drivers||[]).find(x => x.name === ds.driver);
+  _editingSalarySettlementId = id;
+  _salaryPreviewDriver = ds.driver;
+  _convertingToSalary = true;
+  document.getElementById('salary-modal-title').textContent = `🔄 Convert to Salary — ${ds.settlement_number||''} ${ds.driver}`;
+  document.getElementById('salary-generate-btn').textContent = '✅ Save as Salary';
+  document.getElementById('salary-period-start').value = ds.period_start || '';
+  document.getElementById('salary-period-end').value = ds.period_end || '';
+  // Default to the driver's current saved weekly salary rather than the old per-load total —
+  // the per-load total is exactly the wrong number here, it's what we're replacing.
+  const defaultSalary = d && d.weekly_salary ? parseFloat(d.weekly_salary) : 0;
+  document.getElementById('salary-amount').value = defaultSalary.toFixed(2);
+  document.getElementById('salary-bonus-toggle').checked = false;
+  document.getElementById('salary-bonus-amt').value = 0;
+  document.getElementById('salary-bonus-note').value = '';
+  document.getElementById('salary-bonus-fields').style.display = 'none';
+  updateSalaryTotal();
+  document.getElementById('salary-modal').classList.add('open');
+}
+
 function toggleSalaryBonusFields() {
   const on = document.getElementById('salary-bonus-toggle').checked;
   document.getElementById('salary-bonus-fields').style.display = on ? 'grid' : 'none';
   if (!on) { document.getElementById('salary-bonus-amt').value = 0; document.getElementById('salary-bonus-note').value = ''; }
   updateSalaryTotal();
+}
+
+function previewSalaryPayout() {
+  const periodStart = document.getElementById('salary-period-start').value;
+  const periodEnd = document.getElementById('salary-period-end').value;
+  const amount = parseFloat(document.getElementById('salary-amount').value) || 0;
+  const bonusAmt = parseFloat(document.getElementById('salary-bonus-amt').value) || 0;
+  const bonusNote = document.getElementById('salary-bonus-note').value || '';
+  if (!periodStart || !periodEnd) { showGlobalAlert('⚠ Enter a period start and end date.', 'err'); return; }
+  if (!amount) { showGlobalAlert('⚠ Enter a salary amount.', 'err'); return; }
+  const draftDs = {
+    id: _editingSalarySettlementId || 'preview',
+    settlement_number: _editingSalarySettlementId ? ((DB.driverSettlements||[]).find(x=>x.id===_editingSalarySettlementId)||{}).settlement_number : null,
+    driver: _salaryPreviewDriver,
+    period_start: periodStart,
+    period_end: periodEnd,
+    ticket_ids: [],
+    total_tons: 0,
+    rate_per_ton: 0,
+    total_amount: amount + bonusAmt,
+    fsc_amt: 0,
+    fsc_details: {},
+    broker_fee_pct: 0,
+    broker_fee_amt: 0,
+    bonus_amount: bonusAmt,
+    bonus_note: bonusNote,
+    status: 'unpaid',
+    created_at: new Date().toISOString(),
+    pay_type: 'salary'
+  };
+  renderDriverSettlementDoc(draftDs, true);
 }
 
 function updateSalaryTotal() {
@@ -3770,6 +3831,7 @@ function closeSalaryModal() {
   document.getElementById('salary-modal').classList.remove('open');
   _salaryPreviewDriver = null;
   _editingSalarySettlementId = null;
+  _convertingToSalary = false;
 }
 
 async function confirmSalaryPayout() {
@@ -3794,6 +3856,11 @@ async function confirmSalaryPayout() {
     ds.total_amount = total;
     ds.bonus_amount = bonusAmt;
     ds.bonus_note = bonusNote;
+    // Converting an old per-load settlement: flip its pay_type now that the amount is
+    // confirmed. ticket_ids/total_tons/rate_per_ton are deliberately left untouched — they
+    // stay on the record as a historical reference to what was actually hauled, they just
+    // no longer drive the Amount Owed math or show up on the printed settlement.
+    if (_convertingToSalary) ds.pay_type = 'salary';
   } else {
     ds = {
       id: 'ds_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
@@ -3821,9 +3888,10 @@ async function confirmSalaryPayout() {
   }
   save(); renderAll();
   const wasEditing = !!_editingSalarySettlementId;
+  const wasConverting = _convertingToSalary;
   closeSalaryModal();
   await gasPost({action: 'saveDriverSettlement', driverSettlement: {...ds, fsc_details: JSON.stringify(ds.fsc_details||{})}});
-  showGlobalAlert(`✅ Salary payout ${wasEditing?'updated':'generated'} for ${driverName} — ${fmt$(total)}`, 'ok');
+  showGlobalAlert(`✅ ${wasConverting ? 'Converted to salary' : (wasEditing ? 'Salary payout updated' : 'Salary payout generated')} for ${driverName} — ${fmt$(total)}`, 'ok');
   printDriverSettlement(ds.id);
 }
 
@@ -5846,6 +5914,7 @@ if ('serviceWorker' in navigator) {
       <div><div id="salary-modal-total">$0.00</div><div style="font-size:11px;color:var(--text3);">total for this payout</div></div>
       <div id="payout-modal-actions">
         <button class="btn" onclick="closeSalaryModal()">Cancel</button>
+        <button class="btn" style="background:var(--surface2);border:1px solid var(--border2);" onclick="previewSalaryPayout()">👁 Preview</button>
         <button class="btn btn-green" id="salary-generate-btn" onclick="confirmSalaryPayout()">✅ Generate Payout</button>
       </div>
     </div>
