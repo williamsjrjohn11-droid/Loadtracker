@@ -3726,6 +3726,7 @@ function generateSalaryPayout(driverName) {
   document.getElementById('salary-period-start').value = range.start;
   document.getElementById('salary-period-end').value = range.end;
   document.getElementById('salary-amount').value = parseFloat(d.weekly_salary||0).toFixed(2);
+  document.getElementById('salary-settlement-date').value = new Date().toISOString().slice(0,10);
   document.getElementById('salary-bonus-toggle').checked = false;
   document.getElementById('salary-bonus-amt').value = 0;
   document.getElementById('salary-bonus-note').value = '';
@@ -3748,6 +3749,7 @@ function editSalaryPayout(id) {
   document.getElementById('salary-period-end').value = ds.period_end || '';
   const baseSalary = parseFloat(ds.total_amount||0) - parseFloat(ds.bonus_amount||0);
   document.getElementById('salary-amount').value = baseSalary.toFixed(2);
+  document.getElementById('salary-settlement-date').value = ds.settlement_date || new Date().toISOString().slice(0,10);
   const hasBonus = !!(ds.bonus_amount && parseFloat(ds.bonus_amount) !== 0);
   document.getElementById('salary-bonus-toggle').checked = hasBonus;
   document.getElementById('salary-bonus-amt').value = ds.bonus_amount || 0;
@@ -3775,6 +3777,7 @@ function convertSettlementToSalary(id) {
   // the per-load total is exactly the wrong number here, it's what we're replacing.
   const defaultSalary = d && d.weekly_salary ? parseFloat(d.weekly_salary) : 0;
   document.getElementById('salary-amount').value = defaultSalary.toFixed(2);
+  document.getElementById('salary-settlement-date').value = ds.settlement_date || new Date().toISOString().slice(0,10);
   document.getElementById('salary-bonus-toggle').checked = false;
   document.getElementById('salary-bonus-amt').value = 0;
   document.getElementById('salary-bonus-note').value = '';
@@ -3796,25 +3799,31 @@ function previewSalaryPayout() {
   const amount = parseFloat(document.getElementById('salary-amount').value) || 0;
   const bonusAmt = parseFloat(document.getElementById('salary-bonus-amt').value) || 0;
   const bonusNote = document.getElementById('salary-bonus-note').value || '';
+  const settlementDate = document.getElementById('salary-settlement-date').value || '';
   if (!periodStart || !periodEnd) { showGlobalAlert('⚠ Enter a period start and end date.', 'err'); return; }
   if (!amount) { showGlobalAlert('⚠ Enter a salary amount.', 'err'); return; }
+  // Carry over any historical loads already attached to this settlement (from a per-load ->
+  // salary conversion) so the preview shows them too, same as the final saved version will.
+  const existingDs = _editingSalarySettlementId ? (DB.driverSettlements||[]).find(x=>x.id===_editingSalarySettlementId) : null;
   const draftDs = {
     id: _editingSalarySettlementId || 'preview',
-    settlement_number: _editingSalarySettlementId ? ((DB.driverSettlements||[]).find(x=>x.id===_editingSalarySettlementId)||{}).settlement_number : null,
+    settlement_number: existingDs ? existingDs.settlement_number : null,
     driver: _salaryPreviewDriver,
     period_start: periodStart,
     period_end: periodEnd,
-    ticket_ids: [],
-    total_tons: 0,
-    rate_per_ton: 0,
+    ticket_ids: existingDs ? (existingDs.ticket_ids||[]) : [],
+    ticket_count: existingDs ? existingDs.ticket_count : 0,
+    total_tons: existingDs ? (existingDs.total_tons||0) : 0,
+    rate_per_ton: existingDs ? (existingDs.rate_per_ton||0) : 0,
     total_amount: amount + bonusAmt,
-    fsc_amt: 0,
-    fsc_details: {},
-    broker_fee_pct: 0,
-    broker_fee_amt: 0,
+    fsc_amt: existingDs ? (existingDs.fsc_amt||0) : 0,
+    fsc_details: existingDs ? (existingDs.fsc_details||{}) : {},
+    broker_fee_pct: existingDs ? (existingDs.broker_fee_pct||0) : 0,
+    broker_fee_amt: existingDs ? (existingDs.broker_fee_amt||0) : 0,
     bonus_amount: bonusAmt,
     bonus_note: bonusNote,
     status: 'unpaid',
+    settlement_date: settlementDate,
     created_at: new Date().toISOString(),
     pay_type: 'salary'
   };
@@ -3843,6 +3852,7 @@ async function confirmSalaryPayout() {
   const amount = parseFloat(document.getElementById('salary-amount').value) || 0;
   const bonusAmt = parseFloat(document.getElementById('salary-bonus-amt').value) || 0;
   const bonusNote = document.getElementById('salary-bonus-note').value || '';
+  const settlementDate = document.getElementById('salary-settlement-date').value || '';
   if (!periodStart || !periodEnd) { showGlobalAlert('⚠ Enter a period start and end date.', 'err'); return; }
   if (!amount) { showGlobalAlert('⚠ Enter a salary amount.', 'err'); return; }
   const total = amount + bonusAmt;
@@ -3856,10 +3866,11 @@ async function confirmSalaryPayout() {
     ds.total_amount = total;
     ds.bonus_amount = bonusAmt;
     ds.bonus_note = bonusNote;
+    ds.settlement_date = settlementDate;
     // Converting an old per-load settlement: flip its pay_type now that the amount is
     // confirmed. ticket_ids/total_tons/rate_per_ton are deliberately left untouched — they
-    // stay on the record as a historical reference to what was actually hauled, they just
-    // no longer drive the Amount Owed math or show up on the printed settlement.
+    // stay on the record and print on the settlement as a "Gross (from loads)" reference,
+    // they just no longer drive the Amount Owed math — that's the flat salary now.
     if (_convertingToSalary) ds.pay_type = 'salary';
   } else {
     ds = {
@@ -3881,6 +3892,7 @@ async function confirmSalaryPayout() {
       bonus_note: bonusNote,
       status: 'unpaid',
       paid_date: '',
+      settlement_date: settlementDate,
       created_at: new Date().toISOString(),
       pay_type: 'salary'
     };
@@ -4778,8 +4790,14 @@ function renderDriverSettlementDoc(ds, isPreview) {
   const fmt = (n) => '$'+parseFloat(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
   const salaryMode = ds.pay_type === 'salary';
   const rows = (ds.ticket_ids||[]).map(tn => DB.tickets.find(x => String(x.ticket||'')===String(tn))).filter(Boolean);
+  // A salary settlement can still carry historical loads if it was converted from a per-load
+  // settlement — show them for reference (gross production value) even though pay is flat.
+  const hasHistoricalLoads = salaryMode && rows.length > 0;
   const d = (DB.drivers||[]).find(x => x.name === ds.driver);
   const printDate = new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
+  const settlementDateLabel = ds.settlement_date
+    ? parseLocalDate(ds.settlement_date).toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})
+    : (ds.status==='paid'&&ds.paid_date?ds.paid_date:printDate);
   const subtotal = rows.reduce((a,t) => a + parseFloat(t.tons||0) * driverPayRate(t, d), 0);
   let fscDetails = {};
   try { fscDetails = typeof ds.fsc_details === 'string' ? JSON.parse(ds.fsc_details||'{}') : (ds.fsc_details||{}); } catch(e) { fscDetails = {}; }
@@ -4793,6 +4811,10 @@ function renderDriverSettlementDoc(ds, isPreview) {
   // For a salary settlement, total_amount already IS the base weekly salary + bonus (there's
   // no per-load subtotal to derive it from), so back out the base salary for display.
   const salaryBase = salaryMode ? (parseFloat(ds.total_amount||0) - bonusAmt) : 0;
+  // "Gross" for a converted salary settlement is what the loads themselves would have billed —
+  // the full per-load value before any broker fee, since this is a production reference figure,
+  // not a pay calculation. It has no bearing on what's actually owed to the driver.
+  const grossFromLoads = subtotal + fscAmt;
   const amountOwed = salaryMode ? parseFloat(ds.total_amount||0) : (afterFee + fscAmt + bonusAmt);
   const docLabel = isPreview ? 'PREVIEW' : (ds.settlement_number || ds.id);
   const ytd = computeDriverYTD(ds);
@@ -4850,7 +4872,7 @@ ${isPreview ? '<div class="preview-banner">⚠ PREVIEW ONLY — this settlement 
     <div><strong>№</strong> ${docLabel}</div>
     <div><strong>Date:</strong> ${printDate}</div>
     <div><strong>Period:</strong> ${ds.period_start||'?'} – ${ds.period_end||'?'}</div>
-    <div><strong>Loads:</strong> ${salaryMode ? 'Weekly Salary' : rows.length}</div>
+    <div><strong>Loads:</strong> ${salaryMode ? (hasHistoricalLoads ? `${rows.length} (salary pay)` : 'Weekly Salary') : rows.length}</div>
   </div>
 </div>
 
@@ -4867,7 +4889,8 @@ ${isPreview ? '<div class="preview-banner">⚠ PREVIEW ONLY — this settlement 
   </div>
 </div>
 
-${salaryMode ? '' : `
+${(salaryMode && !hasHistoricalLoads) ? '' : `
+${hasHistoricalLoads ? '<div style="font-size:11px;color:#888;margin-bottom:4px;">Loads completed this period — shown for reference; pay is a flat weekly salary, not based on these figures.</div>' : ''}
 <div style="overflow-x:auto;">
 <table>
 <thead><tr><th>#</th><th>Date</th><th>Ticket #</th><th>Truck #</th><th>Pickup</th><th>Deliver</th><th>Tons</th>${isPercentageDriver(d) ? '' : '<th>Rate</th>'}<th>Total</th>${isPercentageDriver(d) ? '' : '<th>FSC</th>'}</tr></thead>
@@ -4884,9 +4907,10 @@ ${rows.map((t,i) => {
 </div>`}
 
 <div class="math-box">
-  <div class="math-row checkdate"><span>${ds.status==='paid'?'PAID DATE':'SETTLEMENT DATE'}</span><span>${ds.status==='paid'&&ds.paid_date?ds.paid_date:printDate}</span></div>
+  <div class="math-row checkdate"><span>${ds.status==='paid'?'PAID DATE':'SETTLEMENT DATE'}</span><span>${settlementDateLabel}</span></div>
   ${salaryMode ? `
-  <div class="math-row"><span>Weekly Salary</span><span>${fmt(salaryBase)}</span></div>
+  ${hasHistoricalLoads ? `<div class="math-row"><span>Gross (from loads)</span><span>${fmt(grossFromLoads)}</span></div>` : ''}
+  <div class="math-row${hasHistoricalLoads ? ' total' : ''}"><span>Driver Pay (Net) — Weekly Salary</span><span>${fmt(salaryBase)}</span></div>
   ${bonusAmt ? `<div class="math-row"><span>Bonus${ds.bonus_note?` (${ds.bonus_note})`:''}</span><span>+${fmt(bonusAmt)}</span></div>` : ''}
   <div class="math-row final"><span>AMOUNT OWED</span><span>${fmt(amountOwed)}</span></div>
   <div class="math-row" style="border-top:1px solid #e5e7eb;margin-top:6px;padding-top:8px;"><span>${new Date().getFullYear()} YTD (${ds.driver})</span><span>${fmt(ytd)}</span></div>
@@ -5895,6 +5919,11 @@ if ('serviceWorker' in navigator) {
     <div class="driver-field">
       <label>Salary Amount ($)</label>
       <input type="number" step="0.01" id="salary-amount" oninput="updateSalaryTotal()">
+    </div>
+    <div class="driver-field">
+      <label>Settlement Date</label>
+      <input type="date" id="salary-settlement-date">
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">Shown on the printed settlement. Defaults to today — change this when backdating or correcting a settlement.</div>
     </div>
     <div style="display:flex;align-items:center;gap:8px;margin:10px 0 0;">
       <input type="checkbox" id="salary-bonus-toggle" onchange="toggleSalaryBonusFields()" style="width:16px;height:16px;accent-color:var(--green);">
