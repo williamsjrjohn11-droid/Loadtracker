@@ -3169,7 +3169,7 @@ function renderDriverPay() {
                 <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="printDriverSettlement('${ds.id}')">🖨️ Print</button>
                 <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="editDriverPayout('${ds.id}')">✏️ Edit</button>
                 ${(!salaryMode && !isPaid) ? `<button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="convertSettlementToSalary('${ds.id}')" title="Keep the loads on record, but pay a flat salary amount instead">🔄 Convert to Salary</button>` : ''}
-                ${isPaid ? '' : `<button class="btn btn-sm btn-green" onclick="markDriverPayoutPaid('${ds.id}')">✓ Mark Paid</button>`}
+                ${isPaid ? `<button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="markDriverPayoutUnpaid('${ds.id}')">↩ Mark Unpaid</button>` : `<button class="btn btn-sm btn-green" onclick="markDriverPayoutPaid('${ds.id}')">✓ Mark Paid</button>`}
                 <button class="btn btn-sm btn-red" onclick="deleteDriverPayout('${ds.id}')">🗑</button>
               </div>
             </div>
@@ -3234,7 +3234,7 @@ function renderOwnerDraws() {
       </div>
       <div style="font-weight:700;color:var(--green);flex-shrink:0;">${fmt$(od.amount)}</div>
       <div style="display:flex;gap:6px;flex-shrink:0;">
-        ${isPaid ? '' : `<button class="btn btn-sm btn-green" onclick="markOwnerDrawPaid('${od.id}')">✓ Mark Paid</button>`}
+        ${isPaid ? `<button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="markOwnerDrawUnpaid('${od.id}')">↩ Unpaid</button>` : `<button class="btn btn-sm btn-green" onclick="markOwnerDrawPaid('${od.id}')">✓ Mark Paid</button>`}
         <button onclick="openOwnerDrawForm('${od.id}')" style="background:none;border:none;cursor:pointer;color:var(--text3);padding:0;" title="Edit draw">✏️</button>
         <button onclick="deleteOwnerDrawForm('${od.id}')" style="background:none;border:none;cursor:pointer;color:var(--red);padding:0;" title="Delete draw">🗑</button>
       </div>
@@ -3299,6 +3299,16 @@ async function markOwnerDrawPaid(id) {
   save(); renderAll();
   await gasPost({action: 'saveOwnerDraw', draw: od});
   showGlobalAlert(`✅ Marked paid — ${fmt$(od.amount)}`, 'ok');
+}
+
+async function markOwnerDrawUnpaid(id) {
+  const od = (DB.ownerDraws||[]).find(x => x.id === id);
+  if (!od) return;
+  od.status = 'unpaid';
+  od.paid_date = '';
+  save(); renderAll();
+  await gasPost({action: 'saveOwnerDraw', draw: od});
+  showGlobalAlert(`↩ Marked unpaid — ${fmt$(od.amount)}`, 'ok');
 }
 
 async function deleteOwnerDrawForm(id) {
@@ -4100,6 +4110,17 @@ async function markDriverPayoutPaid(id) {
   save(); renderAll();
   await gasPost({action: 'saveDriverSettlement', driverSettlement: ds});
   showGlobalAlert(`✅ Marked paid — ${ds.driver} ${fmt$(ds.total_amount)}`, 'ok');
+}
+
+async function markDriverPayoutUnpaid(id) {
+  const ds = (DB.driverSettlements||[]).find(x => x.id === id);
+  if (!ds) return;
+  if (!confirm(`Mark ${ds.settlement_number||ds.id} back to unpaid? This just corrects the record — if ${ds.driver} was actually already paid this, undo that separately.`)) return;
+  ds.status = 'unpaid';
+  ds.paid_date = '';
+  save(); renderAll();
+  await gasPost({action: 'saveDriverSettlement', driverSettlement: ds});
+  showGlobalAlert(`↩ Marked unpaid — ${ds.driver} ${fmt$(ds.total_amount)}`, 'ok');
 }
 
 async function deleteDriverPayout(id) {
@@ -5187,6 +5208,13 @@ function cleanDate(dateStr) {
   if (dateStr.includes('T')) {
     const d = new Date(dateStr);
     if (!isNaN(d)) return `${d.getMonth()+1}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`;
+  }
+  // Bare YYYY-MM-DD (e.g. straight from an <input type="date">, like the Settlement Date or
+  // Period fields on the salary modal) — reformat to match the M/D/YY style used everywhere
+  // else, using parseLocalDate so it doesn't shift a day due to UTC parsing.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    const d = parseLocalDate(dateStr);
+    if (d && !isNaN(d)) return `${d.getMonth()+1}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`;
   }
   // Already clean format
   return dateStr;
