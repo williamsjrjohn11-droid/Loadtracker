@@ -156,6 +156,10 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
 #owner-draw-modal.open{display:flex;}
 #owner-draw-modal-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;width:100%;max-width:400px;}
 #owner-draw-modal-title{font-family:'Barlow Condensed',sans-serif;font-size:18px;font-weight:700;margin-bottom:14px;}
+#merge-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;align-items:center;justify-content:center;padding:16px;}
+#merge-modal.open{display:flex;}
+#merge-modal-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;width:100%;max-width:440px;max-height:85vh;overflow-y:auto;}
+#merge-modal-title{font-family:'Barlow Condensed',sans-serif;font-size:18px;font-weight:700;margin-bottom:8px;}
 #driver-modal-title{font-family:'Barlow Condensed',sans-serif;font-size:18px;font-weight:700;margin-bottom:14px;}
 .driver-field{margin-bottom:12px;}
 .driver-field label{display:block;font-size:10px;color:var(--text2);text-transform:uppercase;margin-bottom:4px;}
@@ -238,6 +242,7 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
   #salary-bonus-fields{grid-template-columns:1fr !important;}
   #salary-modal-box{padding:14px;}
   #owner-draw-modal-box{padding:14px;}
+  #merge-modal-box{padding:14px;}
 }
 @media(max-width:420px){
   #owner-draw-card .card > div:first-child{flex-direction:column;align-items:flex-start !important;}
@@ -3169,6 +3174,7 @@ function renderDriverPay() {
                 <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="printDriverSettlement('${ds.id}')">🖨️ Print</button>
                 <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="editDriverPayout('${ds.id}')">✏️ Edit</button>
                 ${(!salaryMode && !isPaid) ? `<button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="convertSettlementToSalary('${ds.id}')" title="Keep the loads on record, but pay a flat salary amount instead">🔄 Convert to Salary</button>` : ''}
+                ${(!isPaid && list.filter(x => x.status !== 'paid').length > 1) ? `<button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="openMergeModal('${ds.id}')" title="Combine this with another unpaid settlement for ${ds.driver} into one">🔗 Merge</button>` : ''}
                 ${isPaid ? `<button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="markDriverPayoutUnpaid('${ds.id}')">↩ Mark Unpaid</button>` : `<button class="btn btn-sm btn-green" onclick="markDriverPayoutPaid('${ds.id}')">✓ Mark Paid</button>`}
                 <button class="btn btn-sm btn-red" onclick="deleteDriverPayout('${ds.id}')">🗑</button>
               </div>
@@ -3725,6 +3731,28 @@ function defaultLastWeekRange() {
   return { start: fmt(lastMon), end: fmt(lastSun) };
 }
 
+// Pulls every EA-side ticket scanned/assigned to this driver within the given date range —
+// this is what puts real loads on a fresh salary settlement instead of leaving it blank.
+// Skips a ticket that's already claimed by a DIFFERENT settlement (so the same load can't
+// silently double up on two settlements), but includes one already on the settlement being
+// edited (so re-opening/re-saving doesn't drop it).
+function getDriverTicketsInPeriod(driverName, periodStart, periodEnd, keepSettlementId) {
+  if (!driverName || !periodStart || !periodEnd) return [];
+  const start = parseLocalDate(periodStart);
+  const end = parseLocalDate(periodEnd);
+  if (!start || !end) return [];
+  end.setHours(23,59,59,999);
+  return (DB.tickets||[]).filter(t => {
+    if ((t.business||'axelar') !== 'ea') return false;
+    if (t.driver !== driverName) return false;
+    if (t.error) return false;
+    if (t.driver_settlement_id && t.driver_settlement_id !== (keepSettlementId||'')) return false;
+    const td = parseLocalDate(t.date);
+    if (!td) return false;
+    return td >= start && td <= end;
+  });
+}
+
 function generateSalaryPayout(driverName) {
   const d = (DB.drivers||[]).find(x => x.name === driverName);
   if (!d) { showGlobalAlert('⚠ Driver not found.', 'err'); return; }
@@ -3796,6 +3824,100 @@ function convertSettlementToSalary(id) {
   document.getElementById('salary-modal').classList.add('open');
 }
 
+// ─── MERGE SETTLEMENTS (consolidate duplicate/overlapping records into one salary settlement) ───
+let _mergeBaseId = null;
+let _mergeAwayIds = []; // settlement ids that get deleted once the merge is confirmed & saved
+let _pendingMergeTicketPushes = [];
+
+function openMergeModal(baseId) {
+  const base = (DB.driverSettlements||[]).find(x => x.id === baseId);
+  if (!base) return;
+  const others = (DB.driverSettlements||[]).filter(x => x.driver === base.driver && x.id !== baseId && x.status !== 'paid');
+  if (!others.length) { showGlobalAlert(`No other unpaid settlements for ${base.driver} to merge with.`, 'err'); return; }
+  _mergeBaseId = baseId;
+  document.getElementById('merge-modal-title').textContent = `🔗 Merge into ${base.settlement_number||base.id} — ${base.driver}`;
+  document.getElementById('merge-modal-list').innerHTML = others.map(ds => {
+    const loadCount = ds.ticket_count || (ds.ticket_ids||[]).length;
+    return `<label style="display:flex;align-items:flex-start;gap:10px;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;cursor:pointer;">
+      <input type="checkbox" class="merge-check" value="${ds.id}" style="width:16px;height:16px;margin-top:2px;accent-color:var(--green);">
+      <div style="font-size:13px;">
+        <div style="font-weight:600;">${ds.settlement_number||ds.id} — ${cleanDate(ds.period_start)||'?'} to ${cleanDate(ds.period_end)||'?'}</div>
+        <div style="color:var(--text3);font-size:11px;">${loadCount} load(s) &nbsp;·&nbsp; ${fmt$(ds.total_amount)} &nbsp;·&nbsp; ${ds.pay_type==='salary'?'salary':'per-load'}</div>
+      </div>
+    </label>`;
+  }).join('');
+  document.getElementById('merge-modal').classList.add('open');
+}
+
+function closeMergeModal() {
+  document.getElementById('merge-modal').classList.remove('open');
+  _mergeBaseId = null;
+}
+
+function confirmMergeSelection() {
+  const base = (DB.driverSettlements||[]).find(x => x.id === _mergeBaseId);
+  if (!base) { closeMergeModal(); return; }
+  const checked = [...document.querySelectorAll('.merge-check:checked')].map(el => el.value);
+  if (!checked.length) { showGlobalAlert('⚠ Select at least one settlement to merge in.', 'err'); return; }
+  const merging = checked.map(id => (DB.driverSettlements||[]).find(x => x.id === id)).filter(Boolean);
+
+  // Combine ticket_ids from every settlement involved, deduped by ticket number.
+  const combinedTicketSet = new Set([...(base.ticket_ids||[]), ...merging.flatMap(x => x.ticket_ids||[])]);
+  const combinedTicketIds = [...combinedTicketSet];
+  const combinedTons = combinedTicketIds.reduce((a, tn) => {
+    const t = DB.tickets.find(x => String(x.ticket||'') === String(tn));
+    return a + (t ? parseFloat(t.tons||0) : 0);
+  }, 0);
+  // Widen the period to cover every merged settlement's date range.
+  const allStarts = [base, ...merging].map(x => x.period_start).filter(Boolean);
+  const allEnds = [base, ...merging].map(x => x.period_end).filter(Boolean);
+  const mergedStart = allStarts.length ? allStarts.reduce((a,b) => new Date(a) < new Date(b) ? a : b) : base.period_start;
+  const mergedEnd = allEnds.length ? allEnds.reduce((a,b) => new Date(a) > new Date(b) ? a : b) : base.period_end;
+
+  base.ticket_ids = combinedTicketIds;
+  base.ticket_count = combinedTicketIds.length;
+  base.total_tons = combinedTons;
+  base.period_start = mergedStart;
+  base.period_end = mergedEnd;
+
+  // Re-point every merged ticket at the surviving settlement, including ones that belonged to
+  // a settlement about to be deleted — otherwise the backend's delete-time unlink would strand
+  // them as "unpaid" again, even though they're accounted for in this settlement's record now.
+  const repointedTickets = [];
+  DB.tickets.forEach(t => {
+    if (combinedTicketSet.has(t.ticket) && t.driver_settlement_id !== base.id) {
+      t.driver_settlement_id = base.id;
+      repointedTickets.push(t);
+    }
+  });
+
+  _mergeAwayIds = merging.map(x => x.id);
+  _pendingMergeTicketPushes = repointedTickets;
+  closeMergeModal();
+
+  // A merge always lands as a single salary settlement — that's the whole point: multiple
+  // fragmented records (per-load, salary, or a mix) become one clean flat-salary record with
+  // every merged load kept on file for reference.
+  const d = (DB.drivers||[]).find(x => x.name === base.driver);
+  _editingSalarySettlementId = base.id;
+  _salaryPreviewDriver = base.driver;
+  _convertingToSalary = true;
+  document.getElementById('salary-modal-title').textContent = `🔗 Merged Settlement — ${base.driver}`;
+  document.getElementById('salary-generate-btn').textContent = '✅ Save Merged Settlement';
+  document.getElementById('salary-period-start').value = mergedStart || '';
+  document.getElementById('salary-period-end').value = mergedEnd || '';
+  const defaultSalary = d && d.weekly_salary ? parseFloat(d.weekly_salary) : parseFloat(base.total_amount||0);
+  document.getElementById('salary-amount').value = defaultSalary.toFixed(2);
+  document.getElementById('salary-settlement-date').value = base.settlement_date || new Date().toISOString().slice(0,10);
+  document.getElementById('salary-bonus-toggle').checked = false;
+  document.getElementById('salary-bonus-amt').value = 0;
+  document.getElementById('salary-bonus-note').value = '';
+  document.getElementById('salary-bonus-fields').style.display = 'none';
+  updateSalaryTotal();
+  document.getElementById('salary-modal').classList.add('open');
+  showGlobalAlert(`Merged ${1+merging.length} settlements — ${combinedTicketIds.length} load(s) total. Set the final salary amount and save.`, 'ok');
+}
+
 function toggleSalaryBonusFields() {
   const on = document.getElementById('salary-bonus-toggle').checked;
   document.getElementById('salary-bonus-fields').style.display = on ? 'grid' : 'none';
@@ -3812,18 +3934,29 @@ function previewSalaryPayout() {
   const settlementDate = document.getElementById('salary-settlement-date').value || '';
   if (!periodStart || !periodEnd) { showGlobalAlert('⚠ Enter a period start and end date.', 'err'); return; }
   if (!amount) { showGlobalAlert('⚠ Enter a salary amount.', 'err'); return; }
-  // Carry over any historical loads already attached to this settlement (from a per-load ->
-  // salary conversion) so the preview shows them too, same as the final saved version will.
   const existingDs = _editingSalarySettlementId ? (DB.driverSettlements||[]).find(x=>x.id===_editingSalarySettlementId) : null;
+  let ticketIds, totalTons;
+  if (_convertingToSalary) {
+    // Converting/merging: carry over the exact historical load set already attached, don't
+    // re-derive from the period — that set may intentionally span dates outside it.
+    ticketIds = existingDs ? (existingDs.ticket_ids||[]) : [];
+    totalTons = existingDs ? (existingDs.total_tons||0) : 0;
+  } else {
+    // Plain salary payout (new or editing one already generated this way): pull every
+    // matching ticket for this driver/period fresh, so the loads actually hauled show up.
+    const rows = getDriverTicketsInPeriod(_salaryPreviewDriver, periodStart, periodEnd, _editingSalarySettlementId);
+    ticketIds = rows.map(t => t.ticket);
+    totalTons = rows.reduce((a,t) => a + parseFloat(t.tons||0), 0);
+  }
   const draftDs = {
     id: _editingSalarySettlementId || 'preview',
     settlement_number: existingDs ? existingDs.settlement_number : null,
     driver: _salaryPreviewDriver,
     period_start: periodStart,
     period_end: periodEnd,
-    ticket_ids: existingDs ? (existingDs.ticket_ids||[]) : [],
-    ticket_count: existingDs ? existingDs.ticket_count : 0,
-    total_tons: existingDs ? (existingDs.total_tons||0) : 0,
+    ticket_ids: ticketIds,
+    ticket_count: ticketIds.length,
+    total_tons: totalTons,
     rate_per_ton: existingDs ? (existingDs.rate_per_ton||0) : 0,
     total_amount: amount + bonusAmt,
     fsc_amt: existingDs ? (existingDs.fsc_amt||0) : 0,
@@ -3853,6 +3986,23 @@ function closeSalaryModal() {
   _convertingToSalary = false;
 }
 
+async function cancelSalaryModal() {
+  // A staged merge already combined ticket_ids/tons onto the base settlement locally (so the
+  // preview shows correctly) before this modal even opened — if the user backs out here
+  // instead of saving, that local combine needs to be undone by re-pulling from the cloud,
+  // otherwise the app would keep showing a half-merged settlement that was never actually saved.
+  if (_mergeAwayIds.length) {
+    _mergeAwayIds = [];
+    _pendingMergeTicketPushes = [];
+    closeSalaryModal();
+    showGlobalAlert('Merge cancelled — refreshing to discard the unsaved change...', 'ok');
+    await syncLoad();
+    renderAll();
+    return;
+  }
+  closeSalaryModal();
+}
+
 async function confirmSalaryPayout() {
   const driverName = _salaryPreviewDriver;
   const d = (DB.drivers||[]).find(x => x.name === driverName);
@@ -3868,6 +4018,8 @@ async function confirmSalaryPayout() {
   const total = amount + bonusAmt;
 
   let ds;
+  let ticketsToLink = [];   // tickets that need driver_settlement_id set to this ds
+  let ticketsToUnlink = []; // tickets that need driver_settlement_id cleared (fell out of the new period)
   if (_editingSalarySettlementId) {
     ds = (DB.driverSettlements||[]).find(x => x.id === _editingSalarySettlementId);
     if (!ds) { showGlobalAlert('⚠ Settlement not found.', 'err'); return; }
@@ -3881,17 +4033,31 @@ async function confirmSalaryPayout() {
     // confirmed. ticket_ids/total_tons/rate_per_ton are deliberately left untouched — they
     // stay on the record and print on the settlement as a "Gross (from loads)" reference,
     // they just no longer drive the Amount Owed math — that's the flat salary now.
-    if (_convertingToSalary) ds.pay_type = 'salary';
+    if (_convertingToSalary) {
+      ds.pay_type = 'salary';
+    } else {
+      // Plain salary settlement (not a conversion/merge): re-pull tickets for the current
+      // period so the loads shown always reflect what's actually assigned to this driver.
+      const oldTicketIds = new Set(ds.ticket_ids||[]);
+      const pulled = getDriverTicketsInPeriod(driverName, periodStart, periodEnd, ds.id);
+      ds.ticket_ids = pulled.map(t => t.ticket);
+      ds.ticket_count = pulled.length;
+      ds.total_tons = pulled.reduce((a,t) => a + parseFloat(t.tons||0), 0);
+      ticketsToLink = pulled;
+      const newTicketSet = new Set(ds.ticket_ids);
+      ticketsToUnlink = (DB.tickets||[]).filter(t => t.driver_settlement_id === ds.id && !newTicketSet.has(t.ticket));
+    }
   } else {
+    const pulled = getDriverTicketsInPeriod(driverName, periodStart, periodEnd, null);
     ds = {
       id: 'ds_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
       settlement_number: nextDriverSettlementNumberLocal(driverName),
       driver: driverName,
       period_start: periodStart,
       period_end: periodEnd,
-      ticket_ids: [],
-      ticket_count: 0,
-      total_tons: 0,
+      ticket_ids: pulled.map(t => t.ticket),
+      ticket_count: pulled.length,
+      total_tons: pulled.reduce((a,t) => a + parseFloat(t.tons||0), 0),
       rate_per_ton: 0,
       total_amount: total,
       fsc_amt: 0,
@@ -3906,14 +4072,35 @@ async function confirmSalaryPayout() {
       created_at: new Date().toISOString(),
       pay_type: 'salary'
     };
+    ticketsToLink = pulled;
     DB.driverSettlements.push(ds);
   }
+  ticketsToLink.forEach(t => { t.driver_settlement_id = ds.id; });
+  ticketsToUnlink.forEach(t => { t.driver_settlement_id = ''; });
   save(); renderAll();
   const wasEditing = !!_editingSalarySettlementId;
   const wasConverting = _convertingToSalary;
+  const mergedAwayIds = [..._mergeAwayIds];
+  const ticketsToPush = [..._pendingMergeTicketPushes, ...ticketsToLink, ...ticketsToUnlink];
+  _mergeAwayIds = [];
+  _pendingMergeTicketPushes = [];
   closeSalaryModal();
   await gasPost({action: 'saveDriverSettlement', driverSettlement: {...ds, fsc_details: JSON.stringify(ds.fsc_details||{})}});
-  showGlobalAlert(`✅ ${wasConverting ? 'Converted to salary' : (wasEditing ? 'Salary payout updated' : 'Salary payout generated')} for ${driverName} — ${fmt$(total)}`, 'ok');
+  for (const t of ticketsToPush) { await gasPost({action: 'saveTicket', ticket: t}); }
+
+  if (mergedAwayIds.length) {
+    // Push the repointed tickets FIRST — the backend's delete-time unlink only clears tickets
+    // still pointing at the id being deleted, so this ordering keeps them correctly attached
+    // to the surviving merged settlement instead of stranding them back to "unpaid."
+    for (const oldId of mergedAwayIds) {
+      DB.driverSettlements = (DB.driverSettlements||[]).filter(x => x.id !== oldId);
+      await gasPost({action: 'deleteDriverSettlement', id: oldId});
+    }
+    save(); renderAll();
+    showGlobalAlert(`✅ Merged into ${ds.settlement_number||ds.driver} — ${fmt$(total)}. ${mergedAwayIds.length} old settlement(s) removed.`, 'ok');
+  } else {
+    showGlobalAlert(`✅ ${wasConverting ? 'Converted to salary' : (wasEditing ? 'Salary payout updated' : 'Salary payout generated')} for ${driverName} — ${fmt$(total)}`, 'ok');
+  }
   printDriverSettlement(ds.id);
 }
 
@@ -5970,10 +6157,22 @@ if ('serviceWorker' in navigator) {
     <div style="display:flex;flex-direction:column;gap:10px;">
       <div><div id="salary-modal-total">$0.00</div><div style="font-size:11px;color:var(--text3);">total for this payout</div></div>
       <div id="payout-modal-actions">
-        <button class="btn" onclick="closeSalaryModal()">Cancel</button>
+        <button class="btn" onclick="cancelSalaryModal()">Cancel</button>
         <button class="btn" style="background:var(--surface2);border:1px solid var(--border2);" onclick="previewSalaryPayout()">👁 Preview</button>
         <button class="btn btn-green" id="salary-generate-btn" onclick="confirmSalaryPayout()">✅ Generate Payout</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<div id="merge-modal">
+  <div id="merge-modal-box">
+    <div id="merge-modal-title">🔗 Merge Settlements</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">Check every other settlement you want folded into this one. All loads combine for reference, and you'll set one final salary amount on the next screen.</div>
+    <div id="merge-modal-list"></div>
+    <div id="driver-modal-actions">
+      <button class="btn" onclick="closeMergeModal()">Cancel</button>
+      <button class="btn btn-green" onclick="confirmMergeSelection()">✅ Merge Selected</button>
     </div>
   </div>
 </div>
