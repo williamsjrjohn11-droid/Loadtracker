@@ -348,6 +348,24 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
       <div class="metric"><div class="metric-label">⛽ EA Fuel Surcharge</div><div class="metric-value" style="color:var(--blue);" id="m-ea-fsc">$0.00</div></div>
     </div>
     <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+        <div class="card-title" style="margin:0;">📅 Daily Snapshot — EA</div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);padding:4px 8px;" onclick="shiftDailySnapshot(-1)">◀</button>
+          <input type="date" id="daily-snapshot-date" onchange="renderDailySnapshot()" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px;font-family:'Barlow',sans-serif;">
+          <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);padding:4px 8px;" onclick="shiftDailySnapshot(1)">▶</button>
+          <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="jumpDailySnapshotToday()">Today</button>
+        </div>
+      </div>
+      <div class="metrics" id="daily-snapshot-metrics">
+        <div class="metric"><div class="metric-label">Loads Completed</div><div class="metric-value" id="ds-loads">0</div></div>
+        <div class="metric"><div class="metric-label">EA Made (Gross)</div><div class="metric-value green" id="ds-ea-made">$0.00</div></div>
+        <div class="metric"><div class="metric-label">🚚 Driver Made</div><div class="metric-value" style="color:var(--amber);" id="ds-driver-made">$0.00</div></div>
+        <div class="metric"><div class="metric-label">⛽ FSC</div><div class="metric-value" style="color:var(--blue);" id="ds-fsc">$0.00</div></div>
+      </div>
+      <div id="daily-snapshot-empty" style="display:none;font-size:12px;color:var(--text3);padding-top:6px;">No EA loads scanned for this date yet.</div>
+    </div>
+    <div class="card">
       <div class="card-title">Earnings by Month</div>
       <div id="month-chart"><div class="empty"><span class="empty-icon">📊</span>No data yet — upload your first settlement</div></div>
     </div>
@@ -2876,6 +2894,68 @@ function renderDash() {
         + `<div style="font-size:11px;color:var(--text3);padding-top:8px;">These match automatically when their settlement PDF is uploaded. If a number looks wrong, tap ✏️ in All Tickets to fix it.</div>`;
     }
   }
+  renderDailySnapshot();
+}
+
+// ─── DAILY SNAPSHOT (EA) — today's production at a glance, right after scanning ────────────
+function shiftDailySnapshot(days) {
+  const input = document.getElementById('daily-snapshot-date');
+  if (!input) return;
+  const current = input.value || new Date().toISOString().slice(0,10);
+  const d = parseLocalDate(current) || new Date();
+  d.setDate(d.getDate() + days);
+  const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), dd=String(d.getDate()).padStart(2,'0');
+  input.value = `${y}-${m}-${dd}`;
+  renderDailySnapshot();
+}
+
+function jumpDailySnapshotToday() {
+  const input = document.getElementById('daily-snapshot-date');
+  if (!input) return;
+  input.value = new Date().toISOString().slice(0,10);
+  renderDailySnapshot();
+}
+
+function renderDailySnapshot() {
+  const input = document.getElementById('daily-snapshot-date');
+  const loadsEl = document.getElementById('ds-loads');
+  const eaMadeEl = document.getElementById('ds-ea-made');
+  const driverMadeEl = document.getElementById('ds-driver-made');
+  const fscEl = document.getElementById('ds-fsc');
+  const emptyEl = document.getElementById('daily-snapshot-empty');
+  if (!input || !loadsEl) return;
+  if (!input.value) input.value = new Date().toISOString().slice(0,10);
+  const selected = parseLocalDate(input.value);
+  if (!selected) return;
+
+  const driverByName = {}; (DB.drivers||[]).forEach(d => { driverByName[d.name] = d; });
+
+  // Match tickets on the calendar date, not string-format — ticket dates come from OCR in
+  // whatever format the scanned document used, so parseLocalDate normalizes both sides.
+  const dayTickets = (DB.tickets||[]).filter(t => {
+    if ((t.business||'axelar') !== 'ea') return false;
+    if (t.error) return false;
+    const td = parseLocalDate(t.date);
+    if (!td) return false;
+    return td.getFullYear()===selected.getFullYear() && td.getMonth()===selected.getMonth() && td.getDate()===selected.getDate();
+  });
+
+  let eaMade = 0, driverMade = 0, fscTotal = 0;
+  dayTickets.forEach(t => {
+    const rate = parseFloat(t.rate_direct||0);
+    const tons = parseFloat(t.tons||0);
+    const gross = tons * rate;
+    eaMade += gross;
+    driverMade += tons * driverPayRate(t, driverByName[t.driver]);
+    const pct = getFSCPctForDate(t.date);
+    if (pct !== null) fscTotal += gross * (pct/100);
+  });
+
+  loadsEl.textContent = dayTickets.length;
+  eaMadeEl.textContent = fmt$(eaMade);
+  driverMadeEl.textContent = fmt$(driverMade);
+  fscEl.textContent = fmt$(fscTotal);
+  if (emptyEl) emptyEl.style.display = dayTickets.length ? 'none' : 'block';
 }
 
 function toggleAwaitMore() {
