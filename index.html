@@ -3980,6 +3980,14 @@ function confirmMergeSelection() {
   base.total_tons = combinedTons;
   base.period_start = mergedStart;
   base.period_end = mergedEnd;
+  // Recompute FSC fresh across the full combined ticket set — trying to merge together each
+  // source settlement's own fsc_details would risk stale/mismatched per-ticket %, so this
+  // just re-derives it the same way a fresh salary payout does (by ticket week).
+  const d = (DB.drivers||[]).find(x => x.name === base.driver);
+  const combinedTicketObjs = combinedTicketIds.map(tn => DB.tickets.find(x => String(x.ticket||'')===String(tn))).filter(Boolean);
+  const fscResult = buildFSCDetailsAuto(combinedTicketObjs, d);
+  base.fsc_amt = fscResult.total;
+  base.fsc_details = fscResult.details;
 
   // Re-point every merged ticket at the surviving settlement, including ones that belonged to
   // a settlement about to be deleted — otherwise the backend's delete-time unlink would strand
@@ -3999,7 +4007,6 @@ function confirmMergeSelection() {
   // A merge always lands as a single salary settlement — that's the whole point: multiple
   // fragmented records (per-load, salary, or a mix) become one clean flat-salary record with
   // every merged load kept on file for reference.
-  const d = (DB.drivers||[]).find(x => x.name === base.driver);
   _editingSalarySettlementId = base.id;
   _salaryPreviewDriver = base.driver;
   _convertingToSalary = true;
@@ -4036,18 +4043,26 @@ function previewSalaryPayout() {
   if (!periodStart || !periodEnd) { showGlobalAlert('⚠ Enter a period start and end date.', 'err'); return; }
   if (!amount) { showGlobalAlert('⚠ Enter a salary amount.', 'err'); return; }
   const existingDs = _editingSalarySettlementId ? (DB.driverSettlements||[]).find(x=>x.id===_editingSalarySettlementId) : null;
-  let ticketIds, totalTons;
+  const d = (DB.drivers||[]).find(x => x.name === _salaryPreviewDriver);
+  let ticketIds, totalTons, fscAmt, fscDetailsObj;
   if (_convertingToSalary) {
     // Converting/merging: carry over the exact historical load set already attached, don't
-    // re-derive from the period — that set may intentionally span dates outside it.
+    // re-derive from the period — that set may intentionally span dates outside it. FSC
+    // carries over too, preserving whatever was originally computed for those loads.
     ticketIds = existingDs ? (existingDs.ticket_ids||[]) : [];
     totalTons = existingDs ? (existingDs.total_tons||0) : 0;
+    fscAmt = existingDs ? (existingDs.fsc_amt||0) : 0;
+    fscDetailsObj = existingDs ? (existingDs.fsc_details||{}) : {};
   } else {
     // Plain salary payout (new or editing one already generated this way): pull every
-    // matching ticket for this driver/period fresh, so the loads actually hauled show up.
+    // matching ticket for this driver/period fresh, so the loads actually hauled show up —
+    // and auto-compute FSC from each ticket's week, same lookup used everywhere else.
     const rows = getDriverTicketsInPeriod(_salaryPreviewDriver, periodStart, periodEnd, _editingSalarySettlementId);
     ticketIds = rows.map(t => t.ticket);
     totalTons = rows.reduce((a,t) => a + parseFloat(t.tons||0), 0);
+    const fscResult = buildFSCDetailsAuto(rows, d);
+    fscAmt = fscResult.total;
+    fscDetailsObj = fscResult.details;
   }
   const draftDs = {
     id: _editingSalarySettlementId || 'preview',
@@ -4060,8 +4075,8 @@ function previewSalaryPayout() {
     total_tons: totalTons,
     rate_per_ton: existingDs ? (existingDs.rate_per_ton||0) : 0,
     total_amount: amount + bonusAmt,
-    fsc_amt: existingDs ? (existingDs.fsc_amt||0) : 0,
-    fsc_details: existingDs ? (existingDs.fsc_details||{}) : {},
+    fsc_amt: fscAmt,
+    fsc_details: fscDetailsObj,
     broker_fee_pct: existingDs ? (existingDs.broker_fee_pct||0) : 0,
     broker_fee_amt: existingDs ? (existingDs.broker_fee_amt||0) : 0,
     bonus_amount: bonusAmt,
@@ -4138,18 +4153,22 @@ async function confirmSalaryPayout() {
       ds.pay_type = 'salary';
     } else {
       // Plain salary settlement (not a conversion/merge): re-pull tickets for the current
-      // period so the loads shown always reflect what's actually assigned to this driver.
-      const oldTicketIds = new Set(ds.ticket_ids||[]);
+      // period so the loads shown always reflect what's actually assigned to this driver,
+      // and auto-compute FSC fresh from each ticket's week.
       const pulled = getDriverTicketsInPeriod(driverName, periodStart, periodEnd, ds.id);
       ds.ticket_ids = pulled.map(t => t.ticket);
       ds.ticket_count = pulled.length;
       ds.total_tons = pulled.reduce((a,t) => a + parseFloat(t.tons||0), 0);
+      const fscResult = buildFSCDetailsAuto(pulled, d);
+      ds.fsc_amt = fscResult.total;
+      ds.fsc_details = fscResult.details;
       ticketsToLink = pulled;
       const newTicketSet = new Set(ds.ticket_ids);
       ticketsToUnlink = (DB.tickets||[]).filter(t => t.driver_settlement_id === ds.id && !newTicketSet.has(t.ticket));
     }
   } else {
     const pulled = getDriverTicketsInPeriod(driverName, periodStart, periodEnd, null);
+    const fscResult = buildFSCDetailsAuto(pulled, d);
     ds = {
       id: 'ds_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
       settlement_number: nextDriverSettlementNumberLocal(driverName),
@@ -4161,8 +4180,8 @@ async function confirmSalaryPayout() {
       total_tons: pulled.reduce((a,t) => a + parseFloat(t.tons||0), 0),
       rate_per_ton: 0,
       total_amount: total,
-      fsc_amt: 0,
-      fsc_details: {},
+      fsc_amt: fscResult.total,
+      fsc_details: fscResult.details,
       broker_fee_pct: 0,
       broker_fee_amt: 0,
       bonus_amount: bonusAmt,
@@ -4275,6 +4294,22 @@ function buildFSCDetails(includedTickets) {
     const subtotal = parseFloat(t.tons||0) * driverPayRate(t, d);
     const pctInput = document.getElementById('payout-fsc-pct-' + i);
     const pct = parseFloat(pctInput?.value || 0) || 0;
+    const amt = subtotal * (pct/100);
+    details[t.ticket] = { pct, amt };
+    total += amt;
+  });
+  return { details, total };
+}
+
+// Same math as buildFSCDetails, but auto-computed straight from each ticket's week (via
+// getFSCPctForDate) instead of reading manual per-ticket % inputs from the Review Payout
+// screen — the salary flow has no such inputs, tickets are pulled/attached automatically.
+function buildFSCDetailsAuto(tickets, driver) {
+  const details = {};
+  let total = 0;
+  tickets.forEach(t => {
+    const subtotal = parseFloat(t.tons||0) * driverPayRate(t, driver);
+    const pct = getFSCPctForDate(t.date) || 0;
     const amt = subtotal * (pct/100);
     details[t.ticket] = { pct, amt };
     total += amt;
