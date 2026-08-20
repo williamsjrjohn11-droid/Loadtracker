@@ -366,6 +366,15 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
         <div class="metric"><div class="metric-label">⛽ FSC</div><div class="metric-value" style="color:var(--blue);" id="ds-fsc">$0.00</div></div>
       </div>
       <div id="daily-snapshot-empty" style="display:none;font-size:12px;color:var(--text3);padding-top:6px;">No EA loads scanned for this date yet.</div>
+      <div style="border-top:1px solid var(--border);margin:14px 0 10px;padding-top:10px;">
+        <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:10px;" id="weekly-snapshot-label">Week of —</div>
+        <div class="metrics" id="weekly-snapshot-metrics">
+          <div class="metric"><div class="metric-label">Loads Completed</div><div class="metric-value" id="ws-loads">0</div></div>
+          <div class="metric"><div class="metric-label">EA Made (Gross)</div><div class="metric-value green" id="ws-ea-made">$0.00</div></div>
+          <div class="metric"><div class="metric-label">🚚 Driver Made</div><div class="metric-value" style="color:var(--amber);" id="ws-driver-made">$0.00</div></div>
+          <div class="metric"><div class="metric-label">⛽ FSC</div><div class="metric-value" style="color:var(--blue);" id="ws-fsc">$0.00</div></div>
+        </div>
+      </div>
     </div>
     <div class="card">
       <div class="card-title">Earnings by Month</div>
@@ -2918,6 +2927,23 @@ function jumpDailySnapshotToday() {
   renderDailySnapshot();
 }
 
+// Shared calc for both the daily and weekly EA snapshot — same 4 numbers, just a different
+// ticket set fed in, so both stay perfectly consistent with each other.
+function computeEaLoadMetrics(tickets) {
+  const driverByName = {}; (DB.drivers||[]).forEach(d => { driverByName[d.name] = d; });
+  let eaMade = 0, driverMade = 0, fscTotal = 0;
+  tickets.forEach(t => {
+    const rate = parseFloat(t.rate_direct||0);
+    const tons = parseFloat(t.tons||0);
+    const gross = tons * rate;
+    eaMade += gross;
+    driverMade += tons * driverPayRate(t, driverByName[t.driver]);
+    const pct = getFSCPctForDate(t.date);
+    if (pct !== null) fscTotal += gross * (pct/100);
+  });
+  return { loads: tickets.length, eaMade, driverMade, fscTotal };
+}
+
 function renderDailySnapshot() {
   const input = document.getElementById('daily-snapshot-date');
   const loadsEl = document.getElementById('ds-loads');
@@ -2930,8 +2956,6 @@ function renderDailySnapshot() {
   const selected = parseLocalDate(input.value);
   if (!selected) return;
 
-  const driverByName = {}; (DB.drivers||[]).forEach(d => { driverByName[d.name] = d; });
-
   // Match tickets on the calendar date, not string-format — ticket dates come from OCR in
   // whatever format the scanned document used, so parseLocalDate normalizes both sides.
   const dayTickets = (DB.tickets||[]).filter(t => {
@@ -2941,23 +2965,37 @@ function renderDailySnapshot() {
     if (!td) return false;
     return td.getFullYear()===selected.getFullYear() && td.getMonth()===selected.getMonth() && td.getDate()===selected.getDate();
   });
+  const day = computeEaLoadMetrics(dayTickets);
 
-  let eaMade = 0, driverMade = 0, fscTotal = 0;
-  dayTickets.forEach(t => {
-    const rate = parseFloat(t.rate_direct||0);
-    const tons = parseFloat(t.tons||0);
-    const gross = tons * rate;
-    eaMade += gross;
-    driverMade += tons * driverPayRate(t, driverByName[t.driver]);
-    const pct = getFSCPctForDate(t.date);
-    if (pct !== null) fscTotal += gross * (pct/100);
+  loadsEl.textContent = day.loads;
+  eaMadeEl.textContent = fmt$(day.eaMade);
+  driverMadeEl.textContent = fmt$(day.driverMade);
+  fscEl.textContent = fmt$(day.fscTotal);
+  if (emptyEl) emptyEl.style.display = day.loads ? 'none' : 'block';
+
+  // Weekly total — Mon–Sun containing whichever date is selected above, so it tracks the
+  // date picker automatically instead of needing its own separate control.
+  const monday = parseLocalDate(getMondayOfWeek(input.value));
+  const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+  const weekTickets = (DB.tickets||[]).filter(t => {
+    if ((t.business||'axelar') !== 'ea') return false;
+    if (t.error) return false;
+    const td = parseLocalDate(t.date);
+    if (!td) return false;
+    return td >= monday && td <= sunday;
   });
-
-  loadsEl.textContent = dayTickets.length;
-  eaMadeEl.textContent = fmt$(eaMade);
-  driverMadeEl.textContent = fmt$(driverMade);
-  fscEl.textContent = fmt$(fscTotal);
-  if (emptyEl) emptyEl.style.display = dayTickets.length ? 'none' : 'block';
+  const week = computeEaLoadMetrics(weekTickets);
+  const fmtShort = (dt) => dt.toLocaleDateString('en-US', {month:'short', day:'numeric'});
+  const labelEl = document.getElementById('weekly-snapshot-label');
+  if (labelEl) labelEl.textContent = `Week of ${fmtShort(monday)} – ${fmtShort(sunday)}, ${sunday.getFullYear()}`;
+  const wsLoads = document.getElementById('ws-loads');
+  const wsEaMade = document.getElementById('ws-ea-made');
+  const wsDriverMade = document.getElementById('ws-driver-made');
+  const wsFsc = document.getElementById('ws-fsc');
+  if (wsLoads) wsLoads.textContent = week.loads;
+  if (wsEaMade) wsEaMade.textContent = fmt$(week.eaMade);
+  if (wsDriverMade) wsDriverMade.textContent = fmt$(week.driverMade);
+  if (wsFsc) wsFsc.textContent = fmt$(week.fscTotal);
 }
 
 function toggleAwaitMore() {
