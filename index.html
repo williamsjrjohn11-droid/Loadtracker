@@ -2750,7 +2750,7 @@ function getFSCPctForDate(dateStr) {
 function driverPayRate(ticket, driver) {
   const amrizeRate = parseFloat(ticket && ticket.rate_direct || 0);
   if (!driver) return amrizeRate;
-  if (driver.pay_mode === 'percentage' && driver.pay_pct) return amrizeRate * (parseFloat(driver.pay_pct)/100);
+  if ((driver.pay_mode === 'percentage' || driver.pay_mode === 'percentage_fsc') && driver.pay_pct) return amrizeRate * (parseFloat(driver.pay_pct)/100);
   if (driver.rate_per_ton) return parseFloat(driver.rate_per_ton); // flat override — also covers legacy drivers saved before pay_mode existed
   return amrizeRate;
 }
@@ -3165,7 +3165,8 @@ function renderDriverPay() {
       if (matchedCount) matchBits.push(`<span style="color:var(--green);">${matchedCount} matched</span>`);
       if (pendingCount) matchBits.push(`<span style="color:var(--amber);">${pendingCount} pending</span>`);
       if (discCount) matchBits.push(`<span style="color:var(--red);">${discCount} discrepanc${discCount===1?'y':'ies'}</span>`);
-      const rateLabel = salaryMode ? `$${parseFloat(d.weekly_salary||0).toFixed(2)}/week salary` : isPercentageDriver(d) ? `${d.pay_pct}% of Amrize's rate (no FSC, no fee)` : d.rate_per_ton ? `$${d.rate_per_ton.toFixed(2)}/ton flat (override)` : `Amrize rate per load`;
+      const isPctFsc = d.pay_mode === 'percentage_fsc' && d.pay_pct;
+      const rateLabel = salaryMode ? `$${parseFloat(d.weekly_salary||0).toFixed(2)}/week salary` : isPercentageDriver(d) ? `${d.pay_pct}% of Amrize's rate (no FSC, no fee)` : isPctFsc ? `${d.pay_pct}% of Amrize's rate + FSC` : d.rate_per_ton ? `$${d.rate_per_ton.toFixed(2)}/ton flat (override)` : `Amrize rate per load`;
       const avatar = d.photo_url
         ? `<img src="${driveThumbUrl(d.photo_url, 72)}" style="width:36px;height:36px;border-radius:50%;object-fit:cover;flex-shrink:0;border:1px solid var(--border);" alt="">`
         : `<div style="width:36px;height:36px;border-radius:50%;background:var(--surface2);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;">🚚</div>`;
@@ -3440,6 +3441,7 @@ function openDriverForm(existingName) {
   document.getElementById('driver-form-paymode').value = payMode;
   document.getElementById('driver-form-rate').value = d && d.rate_per_ton ? d.rate_per_ton : '';
   document.getElementById('driver-form-pct').value = d && d.pay_pct ? d.pay_pct : '';
+  document.getElementById('driver-form-fee-pct').value = d && d.broker_fee_pct ? d.broker_fee_pct : '';
   document.getElementById('driver-form-salary').value = d && d.weekly_salary ? d.weekly_salary : '';
   toggleDriverPayModeFields();
   document.getElementById('driver-form-truck').value = d ? (d.truck_number||'') : '';
@@ -3493,8 +3495,17 @@ async function handleDriverPhotoSelect(event) {
 function toggleDriverPayModeFields() {
   const mode = document.getElementById('driver-form-paymode').value;
   document.getElementById('driver-form-rate-wrap').style.display = mode === 'flat' ? 'block' : 'none';
-  document.getElementById('driver-form-pct-wrap').style.display = mode === 'percentage' ? 'block' : 'none';
+  document.getElementById('driver-form-pct-wrap').style.display = (mode === 'percentage' || mode === 'percentage_fsc') ? 'block' : 'none';
   document.getElementById('driver-form-salary-wrap').style.display = mode === 'salary' ? 'block' : 'none';
+  // Broker fee/FSC don't apply to a pure-percentage driver (their % is their whole cut) or a
+  // salary driver (pay isn't tied to loads at all) — every other mode can carry a fee default.
+  document.getElementById('driver-form-fee-wrap').style.display = (mode === 'amrize' || mode === 'flat' || mode === 'percentage_fsc') ? 'block' : 'none';
+  const pctNote = document.getElementById('driver-form-pct-note');
+  if (pctNote) {
+    pctNote.textContent = mode === 'percentage_fsc'
+      ? "If Amrize pays $9.80/ton and this is 30%, the driver gets $2.94/ton — plus their full fuel surcharge on top, same as an Amrize/Flat driver. Broker fee can still apply."
+      : "If Amrize pays $9.80/ton and this is 30%, the driver gets $2.94/ton. No fuel surcharge, no broker fee taken out on top — this % is their whole cut.";
+  }
 }
 
 function closeDriverModal() {
@@ -3533,13 +3544,14 @@ async function saveDriverForm() {
   const payMode = document.getElementById('driver-form-paymode').value;
   const rate = parseFloat(document.getElementById('driver-form-rate').value) || 0;
   const pct = parseFloat(document.getElementById('driver-form-pct').value) || 0;
+  const feePct = parseFloat(document.getElementById('driver-form-fee-pct').value) || 0;
   const salary = parseFloat(document.getElementById('driver-form-salary').value) || 0;
   const truck = document.getElementById('driver-form-truck').value.trim().toUpperCase();
   const notes = document.getElementById('driver-form-notes').value.trim();
   const active = document.getElementById('driver-form-active').checked;
   const photoUrl = document.getElementById('driver-form-photo-url').value.trim();
 
-  if (payMode === 'percentage' && !pct) { showGlobalAlert('⚠ Enter a percentage for this pay method.', 'err'); return; }
+  if ((payMode === 'percentage' || payMode === 'percentage_fsc') && !pct) { showGlobalAlert('⚠ Enter a percentage for this pay method.', 'err'); return; }
   if (payMode === 'flat' && !rate) { showGlobalAlert('⚠ Enter a flat $/ton rate for this pay method.', 'err'); return; }
   if (payMode === 'salary' && !salary) { showGlobalAlert('⚠ Enter a weekly salary amount for this pay method.', 'err'); return; }
 
@@ -3548,7 +3560,8 @@ async function saveDriverForm() {
     status: active ? 'ACTIVE' : 'INACTIVE', active,
     pay_mode: payMode,
     rate_per_ton: payMode === 'flat' ? rate : 0,
-    pay_pct: payMode === 'percentage' ? pct : 0,
+    pay_pct: (payMode === 'percentage' || payMode === 'percentage_fsc') ? pct : 0,
+    broker_fee_pct: (payMode === 'amrize' || payMode === 'flat' || payMode === 'percentage_fsc') ? feePct : 0,
     weekly_salary: payMode === 'salary' ? salary : 0,
     truck_number: truck, notes,
     photo_url: photoUrl
@@ -3695,7 +3708,9 @@ function generateDriverPayout(driverName) {
   document.getElementById('payout-modal-title').textContent = `💵 Review Payout — ${driverName}`;
   document.getElementById('payout-modal-sub').textContent = `Uncheck any load you don't want included in this payout — it'll stay unpaid and available next time.`;
   document.getElementById('payout-generate-btn').textContent = '✅ Generate Payout';
-  document.getElementById('payout-fee-pct').value = 0;
+  // Prefill from this driver's own saved default broker fee % — brokers/rates vary driver to
+  // driver, so this saves re-typing it every time instead of always starting at 0.
+  document.getElementById('payout-fee-pct').value = d.broker_fee_pct || 0;
   document.getElementById('payout-bonus-toggle').checked = false;
   document.getElementById('payout-bonus-amt').value = 0;
   document.getElementById('payout-bonus-note').value = '';
@@ -5426,7 +5441,9 @@ function exportPercentageDriverReport() {
   const to = toVal ? parseLocalDate(toVal) : null;
   if (to) to.setHours(23,59,59,999); // include the whole "to" day
 
-  const pctDriverNames = new Set((DB.drivers||[]).filter(d => (d.pay_mode||'').toLowerCase() === 'percentage').map(d => d.name));
+  // Includes both percentage pay modes — 'percentage_fsc' drivers are still fundamentally
+  // percentage-based, just with FSC added on top, so they belong in this report too.
+  const pctDriverNames = new Set((DB.drivers||[]).filter(d => ['percentage','percentage_fsc'].includes((d.pay_mode||'').toLowerCase())).map(d => d.name));
   if (!pctDriverNames.size) { showGlobalAlert('No percentage-pay drivers set up yet.', 'err'); return; }
 
   const loads = DB.tickets.filter(t => {
@@ -6386,6 +6403,7 @@ if ('serviceWorker' in navigator) {
         <option value="amrize">Amrize rate per load (default — gets full FSC)</option>
         <option value="flat">Flat $/ton, every load (still gets full FSC)</option>
         <option value="percentage">Percentage of Amrize's rate (no FSC, no broker fee — their full cut)</option>
+        <option value="percentage_fsc">Percentage of Amrize's rate + FSC (broker fee can still apply)</option>
         <option value="salary">Weekly salary (flat pay — replaces per-load math entirely)</option>
       </select>
     </div>
@@ -6396,7 +6414,12 @@ if ('serviceWorker' in navigator) {
     <div class="driver-field" id="driver-form-pct-wrap" style="display:none;">
       <label>Percentage of Amrize's Rate (%)</label>
       <input type="number" step="0.01" inputmode="decimal" id="driver-form-pct" placeholder="e.g. 30">
-      <div style="font-size:11px;color:var(--text3);margin-top:4px;">If Amrize pays $9.80/ton and this is 30%, the driver gets $2.94/ton. No fuel surcharge, no broker fee taken out on top — this % is their whole cut.</div>
+      <div id="driver-form-pct-note" style="font-size:11px;color:var(--text3);margin-top:4px;">If Amrize pays $9.80/ton and this is 30%, the driver gets $2.94/ton. No fuel surcharge, no broker fee taken out on top — this % is their whole cut.</div>
+    </div>
+    <div class="driver-field" id="driver-form-fee-wrap" style="display:none;">
+      <label>Default Broker Fee (%)</label>
+      <input type="number" step="0.01" inputmode="decimal" id="driver-form-fee-pct" placeholder="e.g. 5">
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">Optional — broker fees vary driver to driver. This just pre-fills the fee % on Review Payout for this driver; still editable per payout.</div>
     </div>
     <div class="driver-field" id="driver-form-salary-wrap" style="display:none;">
       <label>Weekly Salary ($)</label>
