@@ -3612,6 +3612,14 @@ async function saveDriverForm() {
   if (payMode === 'flat' && !rate) { showGlobalAlert('⚠ Enter a flat $/ton rate for this pay method.', 'err'); return; }
   if (payMode === 'salary' && !salary) { showGlobalAlert('⚠ Enter a weekly salary amount for this pay method.', 'err'); return; }
 
+  // Sanity guardrails — mobile number-pad fields sometimes get a phone number autofilled/tapped
+  // in by mistake instead of the real value (this has happened before). Catch anything wildly
+  // out of a plausible range before it gets saved rather than relying on catching it visually.
+  if (pct > 100) { showGlobalAlert(`⚠ ${pct}% doesn't look like a valid percentage — double-check nothing got autofilled in wrong (like a phone number) before saving.`, 'err'); return; }
+  if (feePct > 100) { showGlobalAlert(`⚠ ${feePct}% doesn't look like a valid broker fee — double-check nothing got autofilled in wrong (like a phone number) before saving.`, 'err'); return; }
+  if (salary > 50000) { if (!confirm(`$${salary.toLocaleString()}/week is unusually high for a salary — double-check that's really the amount and not something like a phone number that got typed in by mistake. Save anyway?`)) return; }
+  if (rate > 1000) { if (!confirm(`$${rate}/ton is unusually high for a flat rate — double-check that's really the rate and not something typed in by mistake. Save anyway?`)) return; }
+
   const driver = {
     name, orig_name: origName,
     status: active ? 'ACTIVE' : 'INACTIVE', active,
@@ -6486,12 +6494,12 @@ if ('serviceWorker' in navigator) {
     </div>
     <div class="driver-field" id="driver-form-pct-wrap" style="display:none;">
       <label>Percentage of Amrize's Rate (%)</label>
-      <input type="number" step="0.01" inputmode="decimal" id="driver-form-pct" placeholder="e.g. 30">
+      <input type="number" step="0.01" inputmode="decimal" min="0" max="100" id="driver-form-pct" placeholder="e.g. 30">
       <div id="driver-form-pct-note" style="font-size:11px;color:var(--text3);margin-top:4px;">If Amrize pays $9.80/ton and this is 30%, the driver gets $2.94/ton. No fuel surcharge, no broker fee taken out on top — this % is their whole cut.</div>
     </div>
     <div class="driver-field" id="driver-form-fee-wrap" style="display:none;">
       <label>Default Broker Fee (%)</label>
-      <input type="number" step="0.01" inputmode="decimal" id="driver-form-fee-pct" placeholder="e.g. 5">
+      <input type="number" step="0.01" inputmode="decimal" min="0" max="100" id="driver-form-fee-pct" placeholder="e.g. 5">
       <div style="font-size:11px;color:var(--text3);margin-top:4px;">Optional — broker fees vary driver to driver. This just pre-fills the fee % on Review Payout for this driver; still editable per payout.</div>
     </div>
     <div class="driver-field" id="driver-form-salary-wrap" style="display:none;">
