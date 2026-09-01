@@ -3103,13 +3103,19 @@ function renderDailySnapshot() {
     }).filter(Boolean).sort((a,b) => b.m.driverMade - a.m.driverMade);
     if (rows.length) {
       breakdownWrap.style.display = 'block';
-      breakdownList.innerHTML = rows.map(r => `<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;">
+      const header = `<div style="display:flex;justify-content:flex-end;gap:14px;flex-wrap:wrap;padding:0 0 6px;font-size:10px;color:var(--text3);text-transform:uppercase;">
+        <span style="min-width:52px;text-align:right;">Loads</span>
+        <span style="min-width:74px;text-align:right;">Gross</span>
+        <span style="min-width:74px;text-align:right;">Driver Pay</span>
+        <span style="min-width:74px;text-align:right;">FSC</span>
+      </div>`;
+      breakdownList.innerHTML = header + rows.map(r => `<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;">
         <div style="font-weight:600;">${r.name}</div>
         <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;">
-          <span style="color:var(--text2);">${r.m.loads} loads</span>
-          <span style="color:var(--green);">${fmt$(r.m.eaMade)}</span>
-          <span style="color:var(--amber);">${fmt$(r.m.driverMade)}</span>
-          <span style="color:var(--blue);">${fmt$(r.m.fscTotal)}</span>
+          <span style="color:var(--text2);min-width:52px;text-align:right;">${r.m.loads}</span>
+          <span style="color:var(--green);min-width:74px;text-align:right;">${fmt$(r.m.eaMade)}</span>
+          <span style="color:var(--amber);min-width:74px;text-align:right;">${fmt$(r.m.driverMade)}</span>
+          <span style="color:var(--blue);min-width:74px;text-align:right;">${fmt$(r.m.fscTotal)}</span>
         </div>
       </div>`).join('');
     } else {
