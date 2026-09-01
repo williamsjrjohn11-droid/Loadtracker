@@ -2428,14 +2428,17 @@ async function processTickets() {
         mt = 'image/jpeg';
       }
       const block = mt.includes('pdf') ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } } : { type: 'image', source: { type: 'base64', media_type: mt, data: b64 } };
-      const text = await callClaude([{ role: 'user', content: [block, { type: 'text', text: 'Extract load ticket data. Return ONLY valid JSON, no markdown. Format: {"ticket":"#","date":"date","pickup":"location","deliver":"location","tons":25.5,"hauler_number":"if shown, the value next to HAULER: on the ticket","truck_number":"if shown, the value next to TRUCK NO. on the ticket","plant_code":"if shown, the code like P4958 next to CUSTOMER: or ZONE: — format is P then 4 digits","origin_hint":"the supplier at top of ticket, e.g. Ambrose Sand & Gravel or Melissa Yard Crushed Stone or Royse City Yard","material":"if shown","time":"if shown, the value next to TIME on the ticket, e.g. 1:59 pm","customer_name":"if shown, the value next to CUSTOMER NAME on the ticket, e.g. MCKINNEY READY MIX PLANT","customer_number":"if shown, the value next to CUSTOMER: on the ticket (may match the zone code)","zone":"if shown, the value next to ZONE: on the ticket","product_code":"if shown, the value next to PRODUCT CODE on the ticket","product":"if shown, the value next to PRODUCT on the ticket, e.g. SG,CONCRETE SAND,#4-#200,W"}' }] }], 600);
+      const text = await callClaude([{ role: 'user', content: [block, { type: 'text', text: 'Extract load ticket data. Return ONLY valid JSON, no markdown. This may be an Amrize-style ticket (has TRUCK NO./PLANT CODE/HAULER fields) or a Preferred Materials-style ticket (has Yard/Truck/Driver Delivery Location fields instead — no plant code system). Format: {"ticket":"#, from TICKET # in the top right, or Ticket # field","date":"date","pickup":"pickup location — for a Preferred-style ticket, use the Yard name shown top-left, e.g. Grayson County Sand & Gravel","deliver":"delivery location — for a Preferred-style ticket, use the stamped DRIVER DELIVERY LOCATION text, e.g. MELISSA","tons":"the NET tons figure specifically (not Gross, not M-Tons/metric tons) — for a ticket with a Tons/Pounds/M-Tons table, use the Net row\'s Tons column","hauler_number":"if shown, the value next to HAULER: on the ticket","truck_number":"if shown, the value next to TRUCK NO. on an Amrize-style ticket specifically","plant_code":"if shown, the code like P4958 next to CUSTOMER: or ZONE: — format is P then 4 digits","origin_hint":"the supplier/yard at top of ticket, e.g. Ambrose Sand & Gravel, Melissa Yard Crushed Stone, Royse City Yard, or Grayson County Sand & Gravel","supplier_truck_id":"if this is a Preferred-style ticket, the full value next to Truck: near the top, e.g. 04 - AG TRANSPORT — this is the CARRIER\'S own internal truck/driver reference, distinct from TRUCK NO.","material":"if shown","time":"if shown, the value next to TIME on the ticket, e.g. 1:59 pm","customer_name":"if shown, the value next to CUSTOMER NAME on the ticket, e.g. MCKINNEY READY MIX PLANT","customer_number":"if shown, the value next to CUSTOMER: on the ticket (may match the zone code)","zone":"if shown, the value next to ZONE: on the ticket","product_code":"if shown, the value next to PRODUCT CODE on the ticket","product":"if shown, the value next to PRODUCT on the ticket, e.g. SG,CONCRETE SAND,#4-#200,W"}' }] }], 600);
       const t = JSON.parse(text);
       t.file = f.name;
       // Auto-tag business from hauler number extracted by AI.
       // 4010550 = Axelar sub-haul, 4011121 = EA direct-haul.
-      // Falls back to 'axelar' when hauler # is missing or unrecognized (safest default — matches existing app behavior).
+      // A Preferred Materials-style ticket has no hauler number at all (that field is
+      // Amrize-specific), but its supplier_truck_id is a clean, unambiguous signal that
+      // it's an EA-side load — check that before falling back to the axelar default.
       const _hnum = String(t.hauler_number || '').replace(/\s/g, '');
       if (_hnum === '4011121') t.business = 'ea';
+      else if (String(t.supplier_truck_id||'').trim()) t.business = 'ea';
       else t.business = 'axelar';
       // Persist the raw report fields under their storage names (kept separate from
       // hauler_number/etc. used only transiently above, so a future prompt tweak
@@ -2462,6 +2465,18 @@ async function processTickets() {
           _lastUsedDriver = truckMatch.name;
         }
       }
+      // Fallback driver match for a Preferred-style ticket — these don't print our TRUCK NO.
+      // at all, only the carrier's own generated reference (e.g. "04 - AG TRANSPORT"), so this
+      // matches against each driver's own saved alt_truck_id instead.
+      if (t.business === 'ea' && !t.driver_match_label && String(t.supplier_truck_id||'').trim() && Array.isArray(DB.drivers) && DB.drivers.length) {
+        const supplierId = String(t.supplier_truck_id).trim().toLowerCase();
+        const altMatch = DB.drivers.find(d => d.active && d.alt_truck_id && d.alt_truck_id.trim().toLowerCase() === supplierId);
+        if (altMatch) {
+          t.driver = altMatch.name;
+          t.driver_match_label = `${t.supplier_truck_id} → ${altMatch.name}`;
+          _lastUsedDriver = altMatch.name;
+        }
+      }
       // Auto-fill rate for EA tickets by matching origin + plant_code against DB.rates.
       // Only runs for EA — Axelar rates come from the settlement PDF.
       if (t.business === 'ea' && Array.isArray(DB.rates) && DB.rates.length) {
@@ -2482,6 +2497,28 @@ async function processTickets() {
           if (match) {
             t.rate_direct = match.rate_per_ton;
             t.rate_match_label = `${match.origin.replace(/^Amrize:\s*/i,'')} → ${match.plant_name} @ $${match.rate_per_ton.toFixed(2)}/ton`;
+          }
+        }
+        // Second matching path — Preferred Materials-style tickets have no plant code at all,
+        // but DO have a Yard (pickup) and a stamped Driver Delivery Location, which line up
+        // directly with the origin/plant_name columns already set up in the Rates table for
+        // Preferred (e.g. "Preferred: Grayson" origin, "MELISSA" plant_name). Only runs if the
+        // plant_code path above didn't already find a match.
+        if (!t.rate_direct) {
+          const deliverHint = String(t.deliver||'').trim().toUpperCase();
+          let prefOriginKey = '';
+          if (hint.includes('grayson')) prefOriginKey = 'preferred: grayson';
+          else if (hint.includes('stringtown')) prefOriginKey = 'preferred: stringtown';
+          if (prefOriginKey && deliverHint) {
+            const prefMatch = DB.rates.find(r =>
+              r.active &&
+              r.origin.toLowerCase() === prefOriginKey &&
+              String(r.plant_name||'').trim().toUpperCase() === deliverHint
+            );
+            if (prefMatch) {
+              t.rate_direct = prefMatch.rate_per_ton;
+              t.rate_match_label = `${prefMatch.origin.replace(/^Preferred:\s*/i,'')} → ${prefMatch.plant_name} @ $${prefMatch.rate_per_ton.toFixed(2)}/ton`;
+            }
           }
         }
       }
@@ -3646,6 +3683,7 @@ function openDriverForm(existingName) {
   document.getElementById('driver-form-salary').value = d && d.weekly_salary ? d.weekly_salary : '';
   toggleDriverPayModeFields();
   document.getElementById('driver-form-truck').value = d ? (d.truck_number||'') : '';
+  document.getElementById('driver-form-alt-truck-id').value = d ? (d.alt_truck_id||'') : '';
   document.getElementById('driver-form-notes').value = d ? (d.notes||'') : '';
   document.getElementById('driver-form-active').checked = d ? !!d.active : true;
   document.getElementById('driver-form-photo-file').value = '';
@@ -3748,6 +3786,7 @@ async function saveDriverForm() {
   const feePct = parseFloat(document.getElementById('driver-form-fee-pct').value) || 0;
   const salary = parseFloat(document.getElementById('driver-form-salary').value) || 0;
   const truck = document.getElementById('driver-form-truck').value.trim().toUpperCase();
+  const altTruckId = document.getElementById('driver-form-alt-truck-id').value.trim();
   const notes = document.getElementById('driver-form-notes').value.trim();
   const active = document.getElementById('driver-form-active').checked;
   const photoUrl = document.getElementById('driver-form-photo-url').value.trim();
@@ -3772,7 +3811,7 @@ async function saveDriverForm() {
     pay_pct: (payMode === 'percentage' || payMode === 'percentage_fsc') ? pct : 0,
     broker_fee_pct: (payMode === 'amrize' || payMode === 'flat' || payMode === 'percentage_fsc') ? feePct : 0,
     weekly_salary: payMode === 'salary' ? salary : 0,
-    truck_number: truck, notes,
+    truck_number: truck, alt_truck_id: altTruckId, notes,
     photo_url: photoUrl
   };
 
@@ -6959,6 +6998,11 @@ if ('serviceWorker' in navigator) {
     <div class="driver-field">
       <label>Truck Number — auto-matches this driver when scanning</label>
       <input type="text" id="driver-form-truck" placeholder="e.g. AG04" style="text-transform:uppercase;">
+    </div>
+    <div class="driver-field">
+      <label>Alt Truck ID (optional — for other carriers)</label>
+      <input type="text" id="driver-form-alt-truck-id" placeholder="e.g. 04 - AG TRANSPORT">
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">Some carriers generate their own truck reference that doesn't match our truck number — set it here so their tickets still auto-match this driver.</div>
     </div>
     <div class="driver-field">
       <label>Notes (optional)</label>
