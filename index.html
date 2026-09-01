@@ -5673,7 +5673,10 @@ function exportEALoadsReport() {
 // grouping here always lines up with how rates get matched, and stays correct automatically
 // as new carriers/quarries get added to that same matching logic.
 function detectCarrierAndOrigin(t) {
-  const hint = String(t.origin_hint||'').toLowerCase();
+  // Check origin_hint first (the field the AI extracts specifically for this), but fall back
+  // to the raw pickup address text — some tickets don't get a populated origin_hint, but the
+  // pickup line itself usually still says "Melissa Yard Crushed Stone" or similar.
+  const hint = String(t.origin_hint || t.pickup || '').toLowerCase();
   if (hint.includes('ambrose')) return { carrier: 'Amrize', origin: 'Amrize: Ambrose' };
   if (hint.includes('melissa')) return { carrier: 'Amrize', origin: 'Amrize: Melissa Rail' };
   if (hint.includes('grayson')) return { carrier: 'Preferred Materials', origin: 'Preferred: Grayson' };
