@@ -3233,7 +3233,10 @@ function renderTicketRow(x) {
   const isEA = (x.business||'axelar')==='ea';
   const bizBtn = `<button onclick="toggleTicketBusiness('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text3);margin-left:5px;padding:0;white-space:nowrap;" title="Currently tagged ${isEA?'EA':'Axelar'} — tap to move to ${isEA?'Axelar':'EA'}">🔀 ${isEA?'EA':'Axelar'}</button>`;
   const driverBtn = isEA ? `<button onclick="editTicketDriver('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:11px;color:${x.driver?'var(--text2)':'var(--amber)'};margin-left:5px;padding:0;white-space:nowrap;" title="${x.driver?'Driver: '+x.driver+' — tap to change':'No driver assigned — tap to set'}">🚚 ${x.driver ? x.driver.replace(/</g,'&lt;') : '⚠ No driver'}</button>` : '';
-  return `<tr><td class="mono" style="white-space:nowrap;"><span>${x.ticket||'—'}</span>${photoBtn}${editBtn}${tonsBtn}${delBtn}${bizBtn}${driverBtn}</td><td style="white-space:nowrap;font-size:12px;">${cleanDate(x.date)||'—'}</td><td style="font-size:12px;">${x.pickup||'—'}</td><td style="font-size:12px;">${x.deliver||'—'}</td>${tc}<td>${x.settled_tons ? parseFloat(x.settled_tons).toFixed(2) : '—'}</td><td>${x.settled_rate ? '$'+parseFloat(x.settled_rate).toFixed(2) : '—'}</td><td>${x.settled_total ? fmt$(x.settled_total) : '—'}</td><td>${x.settled_fsc ? fmt$(x.settled_fsc) : '—'}</td><td>${badge}</td></tr>`;
+  const carrierInfo = isEA ? detectCarrierAndOrigin(x) : null;
+  const carrierUnmatched = isEA && !x.carrier_override && carrierInfo.carrier === 'Other / Unmatched';
+  const carrierBtn = isEA ? `<button onclick="editTicketCarrier('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:11px;color:${x.carrier_override?'var(--text2)':(carrierUnmatched?'var(--amber)':'var(--text3)')};margin-left:5px;padding:0;white-space:nowrap;" title="${x.carrier_override?'Carrier override: '+x.carrier_override+' — tap to change or clear':'Auto-detected: '+carrierInfo.carrier+' — tap to override'}">🏷️ ${x.carrier_override || carrierInfo.carrier}</button>` : '';
+  return `<tr><td class="mono" style="white-space:nowrap;"><span>${x.ticket||'—'}</span>${photoBtn}${editBtn}${tonsBtn}${delBtn}${bizBtn}${driverBtn}${carrierBtn}</td><td style="white-space:nowrap;font-size:12px;">${cleanDate(x.date)||'—'}</td><td style="font-size:12px;">${x.pickup||'—'}</td><td style="font-size:12px;">${x.deliver||'—'}</td>${tc}<td>${x.settled_tons ? parseFloat(x.settled_tons).toFixed(2) : '—'}</td><td>${x.settled_rate ? '$'+parseFloat(x.settled_rate).toFixed(2) : '—'}</td><td>${x.settled_total ? fmt$(x.settled_total) : '—'}</td><td>${x.settled_fsc ? fmt$(x.settled_fsc) : '—'}</td><td>${badge}</td></tr>`;
 }
 
 function parseSettDate(s) {
@@ -5673,6 +5676,13 @@ function exportEALoadsReport() {
 // grouping here always lines up with how rates get matched, and stays correct automatically
 // as new carriers/quarries get added to that same matching logic.
 function detectCarrierAndOrigin(t) {
+  // Manual override always wins — this is the escape hatch for a ticket whose pickup text
+  // doesn't contain a keyword the auto-detection recognizes (bad OCR, a new quarry we haven't
+  // added a keyword for yet, etc.). Set once on the ticket, it sticks regardless of what the
+  // detection logic below would otherwise guess.
+  if (t.carrier_override) {
+    return { carrier: t.carrier_override, origin: `${t.carrier_override}: ${t.pickup || 'manually assigned'}` };
+  }
   // Check origin_hint first (the field the AI extracts specifically for this), but fall back
   // to the raw pickup address text — some tickets don't get a populated origin_hint, but the
   // pickup line itself usually still says "Melissa Yard Crushed Stone" or similar.
@@ -5718,11 +5728,12 @@ function buildCarrierPayrollReportData(fromVal, toVal) {
     byCarrier[carrier].tons += tons;
     byCarrier[carrier].gross += gross;
     byCarrier[carrier].fsc += fscAmt;
-    if (!byCarrier[carrier].origins[origin]) byCarrier[carrier].origins[origin] = { loads:0, tons:0, gross:0, fsc:0 };
+    if (!byCarrier[carrier].origins[origin]) byCarrier[carrier].origins[origin] = { loads:0, tons:0, gross:0, fsc:0, tickets:[] };
     byCarrier[carrier].origins[origin].loads++;
     byCarrier[carrier].origins[origin].tons += tons;
     byCarrier[carrier].origins[origin].gross += gross;
     byCarrier[carrier].origins[origin].fsc += fscAmt;
+    byCarrier[carrier].origins[origin].tickets.push(t.ticket || '?');
   });
 
   // ---- Payroll (per-driver) ----
@@ -5783,20 +5794,23 @@ function exportCarrierPayrollExcel() {
   const data = buildCarrierPayrollReportData(fromVal, toVal);
   if (!data.loads.length) { showGlobalAlert('No EA loads found in that date range.', 'err'); return; }
 
-  const carrierRows = [['Carrier / Origin','Loads','Tons','Gross ($)','FSC %','FSC ($)']];
+  const carrierRows = [['Carrier / Origin','Loads','Tons','Gross ($)','FSC %','FSC ($)','Ticket #s (if unmatched)']];
   Object.keys(data.byCarrier).sort().forEach(carrier => {
     const c = data.byCarrier[carrier];
+    const isUnmatched = carrier === 'Other / Unmatched';
     // Blended effective % for the row — the report can span multiple weeks with different
     // published rates, so this is FSC$ as a % of gross rather than a single looked-up rate.
     const cPct = c.gross ? round2(c.fsc / c.gross * 100) : 0;
-    carrierRows.push([carrier, c.loads, round2(c.tons), round2(c.gross), cPct, round2(c.fsc)]);
+    carrierRows.push([carrier, c.loads, round2(c.tons), round2(c.gross), cPct, round2(c.fsc), '']);
     Object.keys(c.origins).sort().forEach(origin => {
       const o = c.origins[origin];
       const oPct = o.gross ? round2(o.fsc / o.gross * 100) : 0;
-      carrierRows.push(['   ' + origin, o.loads, round2(o.tons), round2(o.gross), oPct, round2(o.fsc)]);
+      // Only unmatched rows get their ticket #s listed — that's what needs fixing in All
+      // Tickets; a matched Amrize/Preferred row doesn't need this since it's already correct.
+      carrierRows.push(['   ' + origin, o.loads, round2(o.tons), round2(o.gross), oPct, round2(o.fsc), isUnmatched ? o.tickets.join(', ') : '']);
     });
   });
-  carrierRows.push(['TOTAL', data.loads.length, round2(data.totalTons), round2(data.totalGross), data.totalGross ? round2(data.totalFsc/data.totalGross*100) : 0, round2(data.totalFsc)]);
+  carrierRows.push(['TOTAL', data.loads.length, round2(data.totalTons), round2(data.totalGross), data.totalGross ? round2(data.totalFsc/data.totalGross*100) : 0, round2(data.totalFsc), '']);
 
   const payrollRows = [['Driver','Pay Method','Loads','Gross Value of Loads ($)','Take-Home Pay ($)','FSC %','FSC ($)','Total Take-Home (incl. FSC) ($)']];
   Object.keys(data.byDriver).sort().forEach(name => {
@@ -5829,10 +5843,14 @@ function printCarrierPayrollReport() {
   const carrierRowsHtml = Object.keys(data.byCarrier).sort().map(carrier => {
     const c = data.byCarrier[carrier];
     const cPct = c.gross ? (c.fsc/c.gross*100) : 0;
+    const isUnmatched = carrier === 'Other / Unmatched';
     const originRows = Object.keys(c.origins).sort().map(origin => {
       const o = c.origins[origin];
       const oPct = o.gross ? (o.fsc/o.gross*100) : 0;
-      return `<tr><td style="padding-left:24px;color:#666;">${origin}</td><td>${o.loads}</td><td>${round2(o.tons)}</td><td>${fmt(o.gross)}</td><td>${oPct.toFixed(1)}%</td><td>${fmt(o.fsc)}</td></tr>`;
+      // Unmatched rows get their ticket #s listed right under the origin text — that's what
+      // actually needs fixing, so the ticket number is what you'd go look up in All Tickets.
+      const ticketLine = isUnmatched ? `<div style="font-size:10px;color:#999;margin-top:2px;">Tickets: ${o.tickets.join(', ')}</div>` : '';
+      return `<tr><td style="padding-left:24px;color:#666;">${origin}${ticketLine}</td><td>${o.loads}</td><td>${round2(o.tons)}</td><td>${fmt(o.gross)}</td><td>${oPct.toFixed(1)}%</td><td>${fmt(o.fsc)}</td></tr>`;
     }).join('');
     return `<tr style="font-weight:700;background:#f9fafb;"><td>${carrier}</td><td>${c.loads}</td><td>${round2(c.tons)}</td><td>${fmt(c.gross)}</td><td>${cPct.toFixed(1)}%</td><td>${fmt(c.fsc)}</td></tr>${originRows}`;
   }).join('');
@@ -6602,6 +6620,24 @@ function editTicketDriver(ticketNum) {
   save(); renderAll();
   pushToCloud({id:'skip'}, [ticket]);
   showGlobalAlert(`✅ Ticket ${ticketNum} assigned to ${driverName}`, 'ok');
+}
+
+function editTicketCarrier(ticketNum) {
+  const ticket = DB.tickets.find(t => String(t.ticket||'') === String(ticketNum));
+  if (!ticket) return;
+  // Suggest every carrier already in use (built-ins plus anything typed in before) so this
+  // stays useful as more customers get added, without needing a code change each time.
+  const known = [...new Set(['Amrize', 'Preferred Materials', ...(DB.tickets||[]).map(t => t.carrier_override).filter(Boolean)])];
+  const autoDetected = detectCarrierAndOrigin(ticket).carrier;
+  const input = prompt(`Manually set the carrier for ticket ${ticketNum} — this overrides auto-detection (currently: ${autoDetected}).\n\nKnown carriers: ${known.join(', ')}\n\nLeave blank and OK to clear the override and go back to auto-detect.`, ticket.carrier_override || '');
+  if (input === null) return; // cancelled
+  ticket.carrier_override = input.trim();
+  save(); renderAll();
+  // Push directly rather than via pushToCloud — that helper can skip an already-cloud-synced,
+  // unmatched, photo-less ticket, which would silently drop this specific edit.
+  gasPost({action: 'saveTicket', ticket: ticket})
+    .catch(() => showGlobalAlert('⚠️ Saved locally but cloud sync failed — try Sync Now.', 'err'));
+  showGlobalAlert(ticket.carrier_override ? `✅ Ticket ${ticketNum} carrier set to "${ticket.carrier_override}".` : `✅ Override cleared for ticket ${ticketNum} — back to auto-detect.`, 'ok');
 }
 
 function deleteTicket(ticketNum) {
