@@ -2781,10 +2781,14 @@ function getMondayOfWeek(dateStr) {
 
 // Looks up the FSC% in effect for a given load date — the most recent FSCRates entry
 // whose week_start Monday is on or before that load's week. Returns null if none set yet.
-function getFSCPctForDate(dateStr) {
+function getFSCPctForDate(dateStr, carrier) {
   const monday = getMondayOfWeek(dateStr);
   if (!monday || !DB.fscRates || !DB.fscRates.length) return null;
+  // Default to Amrize for every existing caller — that's the only carrier that had FSC rates
+  // before multi-carrier support was added, so this keeps all prior behavior unchanged.
+  const targetCarrier = carrier || 'Amrize';
   const sorted = [...DB.fscRates]
+    .filter(r => (r.carrier || 'Amrize') === targetCarrier)
     .map(r => ({...r, _mondayNorm: getMondayOfWeek(r.week_start)}))
     .filter(r => r._mondayNorm)
     .sort((a,b) => parseLocalDate(b._mondayNorm) - parseLocalDate(a._mondayNorm));
@@ -4814,14 +4818,14 @@ function renderFSCRateList() {
     if (summaryEl) summaryEl.textContent = 'No weeks entered yet';
     return;
   }
-  if (summaryEl) summaryEl.textContent = `${rates.length} week${rates.length===1?'':'s'} entered — most recent: ${rates[0].fsc_pct}% — tap to view all`;
+  if (summaryEl) summaryEl.textContent = `${rates.length} entr${rates.length===1?'y':'ies'} — most recent: ${rates[0].carrier||'Amrize'} ${rates[0].fsc_pct}% — tap to view all`;
   el.innerHTML = rates.map(r => {
     const monday = parseLocalDate(getMondayOfWeek(r.week_start));
     const sunday = new Date(monday); sunday.setDate(monday.getDate()+6);
     const fmtD = (d) => `${d.getMonth()+1}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`;
     return `<div class="card" style="padding:10px 14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
       <div>
-        <div style="font-weight:600;">${fmtD(monday)} – ${fmtD(sunday)}</div>
+        <div style="font-weight:600;">${fmtD(monday)} – ${fmtD(sunday)} <span class="badge" style="margin-left:6px;background:var(--surface2);color:var(--text2);font-weight:400;">${r.carrier||'Amrize'}</span></div>
         <div style="font-size:12px;color:var(--text2);">${r.notes||''}</div>
       </div>
       <div style="display:flex;align-items:center;gap:10px;">
@@ -4929,10 +4933,13 @@ async function confirmFSCImport() {
     for (const p of toImport) {
       done++;
       updateLoadingOverlay(`Importing week ${done} of ${toImport.length}…`);
-      const existingIdx = (DB.fscRates||[]).findIndex(r => getMondayOfWeek(r.week_start) === p.weekStart);
+      // This import specifically parses Amrize's weekly email format, so every row it
+      // produces is explicitly tagged as Amrize's rate — matched only against other
+      // Amrize entries for that week, never against a different carrier's rate.
+      const existingIdx = (DB.fscRates||[]).findIndex(r => getMondayOfWeek(r.week_start) === p.weekStart && (r.carrier||'Amrize') === 'Amrize');
       const rate = existingIdx >= 0
-        ? { ...DB.fscRates[existingIdx], week_start: p.weekStart, fsc_pct: p.pct }
-        : { id: 'fsc_'+Date.now()+'_'+Math.random().toString(36).slice(2,6), week_start: p.weekStart, fsc_pct: p.pct, notes: '' };
+        ? { ...DB.fscRates[existingIdx], week_start: p.weekStart, carrier: 'Amrize', fsc_pct: p.pct }
+        : { id: 'fsc_'+Date.now()+'_'+Math.random().toString(36).slice(2,6), week_start: p.weekStart, carrier: 'Amrize', fsc_pct: p.pct, notes: '' };
       if (existingIdx >= 0) DB.fscRates[existingIdx] = rate; else DB.fscRates.push(rate);
       await gasPost({action: 'saveFSCRate', fscRate: rate});
     }
@@ -4950,6 +4957,11 @@ function openFSCRateForm(id) {
   const wsInput = document.getElementById('fsc-rate-week-start');
   wsInput.value = r ? toDateInputValue(r.week_start) : toDateInputValue(getMondayOfWeek(new Date().toISOString()));
   wsInput.dataset.editId = r ? r.id : '';
+  document.getElementById('fsc-rate-carrier').value = r ? (r.carrier || 'Amrize') : 'Amrize';
+  // Populate the carrier suggestion list from every carrier already seen, so it grows on its
+  // own as new customers get added instead of needing a code change each time.
+  const knownCarriers = [...new Set(['Amrize', 'Preferred Materials', ...(DB.fscRates||[]).map(x => x.carrier || 'Amrize')])];
+  document.getElementById('fsc-rate-carrier-list').innerHTML = knownCarriers.map(c => `<option value="${c.replace(/"/g,'&quot;')}">`).join('');
   document.getElementById('fsc-rate-pct').value = r ? r.fsc_pct : '';
   document.getElementById('fsc-rate-notes').value = r ? (r.notes||'') : '';
   document.getElementById('fsc-rate-delete-btn').style.display = r ? 'inline-block' : 'none';
@@ -4964,18 +4976,21 @@ async function saveFSCRateForm() {
   const wsInput = document.getElementById('fsc-rate-week-start');
   const weekStartRaw = wsInput.value;
   if (!weekStartRaw) { showGlobalAlert('⚠ Pick a week start date.', 'err'); return; }
+  const carrier = document.getElementById('fsc-rate-carrier').value.trim() || 'Amrize';
   const pct = parseFloat(document.getElementById('fsc-rate-pct').value);
   if (isNaN(pct)) { showGlobalAlert('⚠ Enter a valid FSC%.', 'err'); return; }
   const notes = document.getElementById('fsc-rate-notes').value.trim();
   const editId = wsInput.dataset.editId;
   const weekStart = getMondayOfWeek(weekStartRaw); // normalize to the Monday of whatever week they picked
 
-  const existingForWeek = (DB.fscRates||[]).find(x => getMondayOfWeek(x.week_start) === weekStart && x.id !== editId);
+  // A week can now have a DIFFERENT rate per carrier — only flag a collision when both the
+  // week AND the carrier match, not just the week.
+  const existingForWeek = (DB.fscRates||[]).find(x => getMondayOfWeek(x.week_start) === weekStart && (x.carrier||'Amrize') === carrier && x.id !== editId);
   if (existingForWeek) {
-    if (!confirm(`There's already an FSC% set for the week of ${weekStart} (${existingForWeek.fsc_pct}%). Overwrite it?`)) return;
+    if (!confirm(`There's already an FSC% set for ${carrier}, week of ${weekStart} (${existingForWeek.fsc_pct}%). Overwrite it?`)) return;
   }
 
-  const rate = { id: editId || ('fsc_'+Date.now()+'_'+Math.random().toString(36).slice(2,6)), week_start: weekStart, fsc_pct: pct, notes };
+  const rate = { id: editId || ('fsc_'+Date.now()+'_'+Math.random().toString(36).slice(2,6)), week_start: weekStart, carrier, fsc_pct: pct, notes };
   if (existingForWeek) {
     const idx = DB.fscRates.findIndex(x => x.id === existingForWeek.id);
     DB.fscRates[idx] = rate;
@@ -4989,7 +5004,7 @@ async function saveFSCRateForm() {
   closeFSCRateModal();
   await gasPost({action: 'saveFSCRate', fscRate: rate});
   if (existingForWeek && existingForWeek.id !== rate.id) { await gasPost({action: 'deleteFSCRate', id: existingForWeek.id}); }
-  showGlobalAlert(`✅ FSC% for week of ${weekStart} set to ${pct}%`, 'ok');
+  showGlobalAlert(`✅ FSC% for ${carrier}, week of ${weekStart} set to ${pct}%`, 'ok');
 }
 
 async function deleteFSCRateForm() {
@@ -5686,50 +5701,73 @@ function buildCarrierPayrollReportData(fromVal, toVal) {
   const driverByName = {}; (DB.drivers||[]).forEach(d => { driverByName[d.name] = d; });
 
   // ---- Carrier / origin breakdown ----
+  // FSC is looked up PER CARRIER now — each customer publishes their own rate, so the same
+  // week can have a different % for Amrize vs Preferred Materials vs whoever comes next.
   const byCarrier = {};
   loads.forEach(t => {
     const { carrier, origin } = detectCarrierAndOrigin(t);
     const tons = parseFloat(t.tons||0);
     const gross = tons * parseFloat(t.rate_direct||0);
-    if (!byCarrier[carrier]) byCarrier[carrier] = { loads:0, tons:0, gross:0, origins:{} };
+    const fscPct = getFSCPctForDate(t.date, carrier) || 0;
+    const fscAmt = gross * (fscPct/100);
+    if (!byCarrier[carrier]) byCarrier[carrier] = { loads:0, tons:0, gross:0, fsc:0, origins:{} };
     byCarrier[carrier].loads++;
     byCarrier[carrier].tons += tons;
     byCarrier[carrier].gross += gross;
-    if (!byCarrier[carrier].origins[origin]) byCarrier[carrier].origins[origin] = { loads:0, tons:0, gross:0 };
+    byCarrier[carrier].fsc += fscAmt;
+    if (!byCarrier[carrier].origins[origin]) byCarrier[carrier].origins[origin] = { loads:0, tons:0, gross:0, fsc:0 };
     byCarrier[carrier].origins[origin].loads++;
     byCarrier[carrier].origins[origin].tons += tons;
     byCarrier[carrier].origins[origin].gross += gross;
+    byCarrier[carrier].origins[origin].fsc += fscAmt;
   });
 
   // ---- Payroll (per-driver) ----
+  // baseTakeHome is pay from the base rate only; fscTakeHome is their FSC pass-through, kept
+  // separate since a plain "percentage" driver's % is their whole cut and gets no FSC on top,
+  // while Amrize/Flat/percentage_fsc drivers do — folding them together would hide that split.
   const byDriver = {};
   loads.forEach(t => {
     if (!t.driver) return;
     const d = driverByName[t.driver];
+    const { carrier } = detectCarrierAndOrigin(t);
     const tons = parseFloat(t.tons||0);
     const gross = tons * parseFloat(t.rate_direct||0);
-    if (!byDriver[t.driver]) byDriver[t.driver] = { loads:0, tons:0, gross:0, takeHome:0, payMode: d ? (d.pay_mode||'amrize') : 'amrize', isSalary: !!(d && d.pay_mode==='salary') };
-    byDriver[t.driver].loads++;
-    byDriver[t.driver].tons += tons;
-    byDriver[t.driver].gross += gross;
-    if (!byDriver[t.driver].isSalary) byDriver[t.driver].takeHome += tons * driverPayRate(t, d);
+    if (!byDriver[t.driver]) byDriver[t.driver] = { loads:0, tons:0, gross:0, baseTakeHome:0, fscTakeHome:0, payMode: d ? (d.pay_mode||'amrize') : 'amrize', isSalary: !!(d && d.pay_mode==='salary') };
+    const rec = byDriver[t.driver];
+    rec.loads++;
+    rec.tons += tons;
+    rec.gross += gross;
+    if (!rec.isSalary) {
+      const driverRate = driverPayRate(t, d);
+      const driverSubtotal = tons * driverRate;
+      rec.baseTakeHome += driverSubtotal;
+      if (!isPercentageDriver(d)) {
+        const fscPct = getFSCPctForDate(t.date, carrier) || 0;
+        rec.fscTakeHome += driverSubtotal * (fscPct/100);
+      }
+    }
   });
   // Salary drivers: take-home is their flat weekly rate, not derived from load math — shown
   // as-is regardless of the exact range length picked, since that's their standing pay, not
-  // something prorated per day.
+  // something prorated per day. No FSC pass-through concept applies to a flat salary.
   Object.keys(byDriver).forEach(name => {
     const rec = byDriver[name];
     if (rec.isSalary) {
       const d = driverByName[name];
-      rec.takeHome = d ? parseFloat(d.weekly_salary||0) : 0;
+      rec.baseTakeHome = d ? parseFloat(d.weekly_salary||0) : 0;
+      rec.fscTakeHome = 0;
     }
   });
 
   const totalGross = loads.reduce((a,t) => a + parseFloat(t.tons||0)*parseFloat(t.rate_direct||0), 0);
-  const totalPayroll = Object.values(byDriver).reduce((a,r) => a + r.takeHome, 0);
+  const totalFsc = Object.values(byCarrier).reduce((a,c) => a + c.fsc, 0);
+  const totalBasePayroll = Object.values(byDriver).reduce((a,r) => a + r.baseTakeHome, 0);
+  const totalFscPayroll = Object.values(byDriver).reduce((a,r) => a + r.fscTakeHome, 0);
+  const totalPayroll = totalBasePayroll + totalFscPayroll;
   const totalTons = loads.reduce((a,t) => a + parseFloat(t.tons||0), 0);
 
-  return { loads, byCarrier, byDriver, totalGross, totalPayroll, totalTons, from: fromVal, to: toVal };
+  return { loads, byCarrier, byDriver, totalGross, totalFsc, totalBasePayroll, totalFscPayroll, totalPayroll, totalTons, from: fromVal, to: toVal };
 }
 
 function payModeLabel(mode) {
@@ -5742,23 +5780,28 @@ function exportCarrierPayrollExcel() {
   const data = buildCarrierPayrollReportData(fromVal, toVal);
   if (!data.loads.length) { showGlobalAlert('No EA loads found in that date range.', 'err'); return; }
 
-  const carrierRows = [['Carrier / Origin','Loads','Tons','Gross ($)']];
+  const carrierRows = [['Carrier / Origin','Loads','Tons','Gross ($)','FSC %','FSC ($)']];
   Object.keys(data.byCarrier).sort().forEach(carrier => {
     const c = data.byCarrier[carrier];
-    carrierRows.push([carrier, c.loads, round2(c.tons), round2(c.gross)]);
+    // Blended effective % for the row — the report can span multiple weeks with different
+    // published rates, so this is FSC$ as a % of gross rather than a single looked-up rate.
+    const cPct = c.gross ? round2(c.fsc / c.gross * 100) : 0;
+    carrierRows.push([carrier, c.loads, round2(c.tons), round2(c.gross), cPct, round2(c.fsc)]);
     Object.keys(c.origins).sort().forEach(origin => {
       const o = c.origins[origin];
-      carrierRows.push(['   ' + origin, o.loads, round2(o.tons), round2(o.gross)]);
+      const oPct = o.gross ? round2(o.fsc / o.gross * 100) : 0;
+      carrierRows.push(['   ' + origin, o.loads, round2(o.tons), round2(o.gross), oPct, round2(o.fsc)]);
     });
   });
-  carrierRows.push(['TOTAL', data.loads.length, round2(data.totalTons), round2(data.totalGross)]);
+  carrierRows.push(['TOTAL', data.loads.length, round2(data.totalTons), round2(data.totalGross), data.totalGross ? round2(data.totalFsc/data.totalGross*100) : 0, round2(data.totalFsc)]);
 
-  const payrollRows = [['Driver','Pay Method','Loads','Gross Value of Loads ($)','Take-Home Pay ($)']];
+  const payrollRows = [['Driver','Pay Method','Loads','Gross Value of Loads ($)','Take-Home Pay ($)','FSC %','FSC ($)','Total Take-Home (incl. FSC) ($)']];
   Object.keys(data.byDriver).sort().forEach(name => {
     const r = data.byDriver[name];
-    payrollRows.push([name, payModeLabel(r.payMode), r.loads, round2(r.gross), round2(r.takeHome)]);
+    const dPct = r.baseTakeHome ? round2(r.fscTakeHome / r.baseTakeHome * 100) : 0;
+    payrollRows.push([name, payModeLabel(r.payMode), r.loads, round2(r.gross), round2(r.baseTakeHome), dPct, round2(r.fscTakeHome), round2(r.baseTakeHome + r.fscTakeHome)]);
   });
-  payrollRows.push(['TOTAL SENT TO PAYROLL','', Object.values(data.byDriver).reduce((a,r)=>a+r.loads,0), round2(Object.values(data.byDriver).reduce((a,r)=>a+r.gross,0)), round2(data.totalPayroll)]);
+  payrollRows.push(['TOTAL SENT TO PAYROLL','', Object.values(data.byDriver).reduce((a,r)=>a+r.loads,0), round2(Object.values(data.byDriver).reduce((a,r)=>a+r.gross,0)), round2(data.totalBasePayroll), data.totalBasePayroll ? round2(data.totalFscPayroll/data.totalBasePayroll*100) : 0, round2(data.totalFscPayroll), round2(data.totalPayroll)]);
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(carrierRows), 'Carrier Summary');
@@ -5782,16 +5825,19 @@ function printCarrierPayrollReport() {
 
   const carrierRowsHtml = Object.keys(data.byCarrier).sort().map(carrier => {
     const c = data.byCarrier[carrier];
+    const cPct = c.gross ? (c.fsc/c.gross*100) : 0;
     const originRows = Object.keys(c.origins).sort().map(origin => {
       const o = c.origins[origin];
-      return `<tr><td style="padding-left:24px;color:#666;">${origin}</td><td>${o.loads}</td><td>${round2(o.tons)}</td><td>${fmt(o.gross)}</td></tr>`;
+      const oPct = o.gross ? (o.fsc/o.gross*100) : 0;
+      return `<tr><td style="padding-left:24px;color:#666;">${origin}</td><td>${o.loads}</td><td>${round2(o.tons)}</td><td>${fmt(o.gross)}</td><td>${oPct.toFixed(1)}%</td><td>${fmt(o.fsc)}</td></tr>`;
     }).join('');
-    return `<tr style="font-weight:700;background:#f9fafb;"><td>${carrier}</td><td>${c.loads}</td><td>${round2(c.tons)}</td><td>${fmt(c.gross)}</td></tr>${originRows}`;
+    return `<tr style="font-weight:700;background:#f9fafb;"><td>${carrier}</td><td>${c.loads}</td><td>${round2(c.tons)}</td><td>${fmt(c.gross)}</td><td>${cPct.toFixed(1)}%</td><td>${fmt(c.fsc)}</td></tr>${originRows}`;
   }).join('');
 
   const payrollRowsHtml = Object.keys(data.byDriver).sort().map(name => {
     const r = data.byDriver[name];
-    return `<tr><td>${name}</td><td style="color:#666;font-size:11px;">${payModeLabel(r.payMode)}</td><td>${r.loads}</td><td>${fmt(r.gross)}</td><td style="font-weight:700;">${fmt(r.takeHome)}</td></tr>`;
+    const dPct = r.baseTakeHome ? (r.fscTakeHome/r.baseTakeHome*100) : 0;
+    return `<tr><td>${name}</td><td style="color:#666;font-size:11px;">${payModeLabel(r.payMode)}</td><td>${r.loads}</td><td>${fmt(r.gross)}</td><td style="font-weight:700;">${fmt(r.baseTakeHome)}</td><td>${dPct.toFixed(1)}%</td><td>${fmt(r.fscTakeHome)}</td><td style="font-weight:800;">${fmt(r.baseTakeHome + r.fscTakeHome)}</td></tr>`;
   }).join('');
 
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Carrier & Payroll Report — ${rangeLabel}</title>
@@ -5839,10 +5885,10 @@ function printCarrierPayrollReport() {
 <div class="section-title">What Each Carrier Paid</div>
 <div style="overflow-x:auto;">
 <table>
-<thead><tr><th>Carrier / Origin</th><th>Loads</th><th>Tons</th><th>Gross ($)</th></tr></thead>
+<thead><tr><th>Carrier / Origin</th><th>Loads</th><th>Tons</th><th>Gross ($)</th><th>FSC %</th><th>FSC ($)</th></tr></thead>
 <tbody>
 ${carrierRowsHtml}
-<tr class="total-row"><td>TOTAL</td><td>${data.loads.length}</td><td>${round2(data.totalTons)}</td><td>${fmt(data.totalGross)}</td></tr>
+<tr class="total-row"><td>TOTAL</td><td>${data.loads.length}</td><td>${round2(data.totalTons)}</td><td>${fmt(data.totalGross)}</td><td>${(data.totalGross ? data.totalFsc/data.totalGross*100 : 0).toFixed(1)}%</td><td>${fmt(data.totalFsc)}</td></tr>
 </tbody>
 </table>
 </div>
@@ -5850,10 +5896,10 @@ ${carrierRowsHtml}
 <div class="section-title">Payroll Summary</div>
 <div style="overflow-x:auto;">
 <table>
-<thead><tr><th>Driver</th><th>Pay Method</th><th>Loads</th><th>Gross Value of Loads</th><th>Take-Home Pay</th></tr></thead>
+<thead><tr><th>Driver</th><th>Pay Method</th><th>Loads</th><th>Gross Value of Loads</th><th>Take-Home Pay</th><th>FSC %</th><th>FSC ($)</th><th>Total (incl. FSC)</th></tr></thead>
 <tbody>
 ${payrollRowsHtml}
-<tr class="total-row"><td>TOTAL SENT TO PAYROLL</td><td></td><td>${Object.values(data.byDriver).reduce((a,r)=>a+r.loads,0)}</td><td>${fmt(Object.values(data.byDriver).reduce((a,r)=>a+r.gross,0))}</td><td>${fmt(data.totalPayroll)}</td></tr>
+<tr class="total-row"><td>TOTAL SENT TO PAYROLL</td><td></td><td>${Object.values(data.byDriver).reduce((a,r)=>a+r.loads,0)}</td><td>${fmt(Object.values(data.byDriver).reduce((a,r)=>a+r.gross,0))}</td><td>${fmt(data.totalBasePayroll)}</td><td>${(data.totalBasePayroll ? data.totalFscPayroll/data.totalBasePayroll*100 : 0).toFixed(1)}%</td><td>${fmt(data.totalFscPayroll)}</td><td>${fmt(data.totalPayroll)}</td></tr>
 </tbody>
 </table>
 </div>
@@ -6797,6 +6843,12 @@ if ('serviceWorker' in navigator) {
     <div class="invoice-field">
       <label>Week Start (Monday)</label>
       <input type="date" id="fsc-rate-week-start">
+    </div>
+    <div class="invoice-field">
+      <label>Carrier</label>
+      <input type="text" id="fsc-rate-carrier" list="fsc-rate-carrier-list" placeholder="Amrize">
+      <datalist id="fsc-rate-carrier-list"></datalist>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">Each carrier publishes their own FSC% — Amrize and Preferred Materials can have different rates for the same week.</div>
     </div>
     <div class="invoice-field">
       <label>FSC % (e.g. 10 for 10%)</label>
