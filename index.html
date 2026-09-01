@@ -604,6 +604,22 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
       <button class="btn btn-green btn-full" onclick="exportPercentageDriverReport()">⬇ Export Excel (.xlsx)</button>
     </div>
 
+    <!-- Carrier & Payroll Report -->
+    <div class="card">
+      <div class="card-title">💰 Carrier & Payroll Report</div>
+      <div style="font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:12px;">
+        Shows what each carrier (Amrize, Preferred Materials, etc.) paid for the period — broken out by specific quarry/origin — alongside a full payroll summary: every driver's loads, the gross value of what they hauled, and their actual take-home pay.
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+        <div class="invoice-field" style="margin-bottom:0;"><label>From</label><input type="date" id="carrier-report-from"></div>
+        <div class="invoice-field" style="margin-bottom:0;"><label>To</label><input type="date" id="carrier-report-to"></div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button class="btn btn-green" style="flex:1;min-width:140px;" onclick="exportCarrierPayrollExcel()">⬇ Export Excel (.xlsx)</button>
+        <button class="btn" style="flex:1;min-width:140px;background:var(--surface2);border:1px solid var(--border2);" onclick="printCarrierPayrollReport()">🖨️ View / Print PDF</button>
+      </div>
+    </div>
+
     <!-- EA Invoice to Amrize -->
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
@@ -1581,7 +1597,7 @@ function switchTab(n) {
   if (n === 'settlements') renderSetts();
   if (n === 'drivers') renderDriverPay();
   if (n === 'weekly') renderWeekly();
-  if (n === 'reports') { populateReportYearFilter(); renderReportPreview(); renderEAReportPreview(); renderEAReportSummary(); renderInvoiceHistory(); renderFSCRateList(); initPercentageReportDates(); }
+  if (n === 'reports') { populateReportYearFilter(); renderReportPreview(); renderEAReportPreview(); renderEAReportSummary(); renderInvoiceHistory(); renderFSCRateList(); initPercentageReportDates(); initCarrierReportDates(); }
 }
 
 // Default the Percentage Driver Report range to "this month" the first time Reports is opened —
@@ -1594,6 +1610,17 @@ function initPercentageReportDates() {
   const first = new Date(now.getFullYear(), now.getMonth(), 1);
   fromEl.value = first.toISOString().slice(0,10);
   toEl.value = now.toISOString().slice(0,10);
+}
+
+// Default the Carrier & Payroll Report to the most recently completed Mon–Sun week — this is
+// framed as a weekly report, so that's the more useful default than "this month."
+function initCarrierReportDates() {
+  const fromEl = document.getElementById('carrier-report-from');
+  const toEl = document.getElementById('carrier-report-to');
+  if (!fromEl || !toEl || fromEl.value || toEl.value) return;
+  const range = defaultLastWeekRange();
+  fromEl.value = range.start;
+  toEl.value = range.end;
 }
 
 // DRAG DROP
@@ -5623,6 +5650,227 @@ function exportEALoadsReport() {
   const missing = sorted.filter(t => !t.customer_name && !t.product).length;
   if (missing > 0) showGlobalAlert(`⬇ Exported ${sorted.length} EA load(s) — ${missing} of them are missing Customer/Product data (scanned before this feature). Re-scan those to fill them in.`, 'ok');
   else showGlobalAlert(`⬇ Exported ${sorted.length} EA load(s).`, 'ok');
+}
+
+// ─── CARRIER & PAYROLL REPORT ───────────────────────────────────────────────
+// Buckets an EA ticket into a carrier + specific origin, using the same origin_hint field
+// (and the same keyword matching) the rate auto-fill already relies on — so the carrier
+// grouping here always lines up with how rates get matched, and stays correct automatically
+// as new carriers/quarries get added to that same matching logic.
+function detectCarrierAndOrigin(t) {
+  const hint = String(t.origin_hint||'').toLowerCase();
+  if (hint.includes('ambrose')) return { carrier: 'Amrize', origin: 'Amrize: Ambrose' };
+  if (hint.includes('melissa')) return { carrier: 'Amrize', origin: 'Amrize: Melissa Rail' };
+  if (hint.includes('grayson')) return { carrier: 'Preferred Materials', origin: 'Preferred: Grayson' };
+  if (hint.includes('stringtown')) return { carrier: 'Preferred Materials', origin: 'Preferred: Stringtown' };
+  // Anything unrecognized still gets counted — labeled by whatever the ticket shows so nothing
+  // silently vanishes from the report, it just won't have a clean carrier name yet.
+  return { carrier: 'Other / Unmatched', origin: t.origin_hint || t.pickup || 'Unknown origin' };
+}
+
+function buildCarrierPayrollReportData(fromVal, toVal) {
+  const from = fromVal ? parseLocalDate(fromVal) : null;
+  const to = toVal ? parseLocalDate(toVal) : null;
+  if (to) to.setHours(23,59,59,999);
+
+  const loads = (DB.tickets||[]).filter(t => {
+    if ((t.business||'axelar') !== 'ea') return false;
+    if (t.error) return false;
+    const dt = parseLocalDate(t.date);
+    if (!dt) return false;
+    if (from && dt < from) return false;
+    if (to && dt > to) return false;
+    return true;
+  });
+
+  const driverByName = {}; (DB.drivers||[]).forEach(d => { driverByName[d.name] = d; });
+
+  // ---- Carrier / origin breakdown ----
+  const byCarrier = {};
+  loads.forEach(t => {
+    const { carrier, origin } = detectCarrierAndOrigin(t);
+    const tons = parseFloat(t.tons||0);
+    const gross = tons * parseFloat(t.rate_direct||0);
+    if (!byCarrier[carrier]) byCarrier[carrier] = { loads:0, tons:0, gross:0, origins:{} };
+    byCarrier[carrier].loads++;
+    byCarrier[carrier].tons += tons;
+    byCarrier[carrier].gross += gross;
+    if (!byCarrier[carrier].origins[origin]) byCarrier[carrier].origins[origin] = { loads:0, tons:0, gross:0 };
+    byCarrier[carrier].origins[origin].loads++;
+    byCarrier[carrier].origins[origin].tons += tons;
+    byCarrier[carrier].origins[origin].gross += gross;
+  });
+
+  // ---- Payroll (per-driver) ----
+  const byDriver = {};
+  loads.forEach(t => {
+    if (!t.driver) return;
+    const d = driverByName[t.driver];
+    const tons = parseFloat(t.tons||0);
+    const gross = tons * parseFloat(t.rate_direct||0);
+    if (!byDriver[t.driver]) byDriver[t.driver] = { loads:0, tons:0, gross:0, takeHome:0, payMode: d ? (d.pay_mode||'amrize') : 'amrize', isSalary: !!(d && d.pay_mode==='salary') };
+    byDriver[t.driver].loads++;
+    byDriver[t.driver].tons += tons;
+    byDriver[t.driver].gross += gross;
+    if (!byDriver[t.driver].isSalary) byDriver[t.driver].takeHome += tons * driverPayRate(t, d);
+  });
+  // Salary drivers: take-home is their flat weekly rate, not derived from load math — shown
+  // as-is regardless of the exact range length picked, since that's their standing pay, not
+  // something prorated per day.
+  Object.keys(byDriver).forEach(name => {
+    const rec = byDriver[name];
+    if (rec.isSalary) {
+      const d = driverByName[name];
+      rec.takeHome = d ? parseFloat(d.weekly_salary||0) : 0;
+    }
+  });
+
+  const totalGross = loads.reduce((a,t) => a + parseFloat(t.tons||0)*parseFloat(t.rate_direct||0), 0);
+  const totalPayroll = Object.values(byDriver).reduce((a,r) => a + r.takeHome, 0);
+  const totalTons = loads.reduce((a,t) => a + parseFloat(t.tons||0), 0);
+
+  return { loads, byCarrier, byDriver, totalGross, totalPayroll, totalTons, from: fromVal, to: toVal };
+}
+
+function payModeLabel(mode) {
+  return ({amrize:'Amrize rate per load', flat:'Flat $/ton', percentage:'% of Amrize (no FSC/fee)', percentage_fsc:'% of Amrize + FSC', salary:'Weekly Salary'})[mode] || mode;
+}
+
+function exportCarrierPayrollExcel() {
+  const fromVal = document.getElementById('carrier-report-from').value;
+  const toVal = document.getElementById('carrier-report-to').value;
+  const data = buildCarrierPayrollReportData(fromVal, toVal);
+  if (!data.loads.length) { showGlobalAlert('No EA loads found in that date range.', 'err'); return; }
+
+  const carrierRows = [['Carrier / Origin','Loads','Tons','Gross ($)']];
+  Object.keys(data.byCarrier).sort().forEach(carrier => {
+    const c = data.byCarrier[carrier];
+    carrierRows.push([carrier, c.loads, round2(c.tons), round2(c.gross)]);
+    Object.keys(c.origins).sort().forEach(origin => {
+      const o = c.origins[origin];
+      carrierRows.push(['   ' + origin, o.loads, round2(o.tons), round2(o.gross)]);
+    });
+  });
+  carrierRows.push(['TOTAL', data.loads.length, round2(data.totalTons), round2(data.totalGross)]);
+
+  const payrollRows = [['Driver','Pay Method','Loads','Gross Value of Loads ($)','Take-Home Pay ($)']];
+  Object.keys(data.byDriver).sort().forEach(name => {
+    const r = data.byDriver[name];
+    payrollRows.push([name, payModeLabel(r.payMode), r.loads, round2(r.gross), round2(r.takeHome)]);
+  });
+  payrollRows.push(['TOTAL SENT TO PAYROLL','', Object.values(data.byDriver).reduce((a,r)=>a+r.loads,0), round2(Object.values(data.byDriver).reduce((a,r)=>a+r.gross,0)), round2(data.totalPayroll)]);
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(carrierRows), 'Carrier Summary');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(payrollRows), 'Payroll Summary');
+
+  const rangeLabel = (fromVal || 'all') + '_to_' + (toVal || 'today');
+  XLSX.writeFile(wb, `Carrier_Payroll_Report_${rangeLabel}.xlsx`);
+  showGlobalAlert(`⬇ Exported — ${data.loads.length} load(s), ${Object.keys(data.byDriver).length} driver(s).`, 'ok');
+}
+
+function printCarrierPayrollReport() {
+  const fromVal = document.getElementById('carrier-report-from').value;
+  const toVal = document.getElementById('carrier-report-to').value;
+  const data = buildCarrierPayrollReportData(fromVal, toVal);
+  if (!data.loads.length) { showGlobalAlert('No EA loads found in that date range.', 'err'); return; }
+
+  const s = loadInvoiceSettings();
+  const fmt = (n) => '$'+parseFloat(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const printDate = new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
+  const rangeLabel = (fromVal ? cleanDate(fromVal) : '?') + ' – ' + (toVal ? cleanDate(toVal) : '?');
+
+  const carrierRowsHtml = Object.keys(data.byCarrier).sort().map(carrier => {
+    const c = data.byCarrier[carrier];
+    const originRows = Object.keys(c.origins).sort().map(origin => {
+      const o = c.origins[origin];
+      return `<tr><td style="padding-left:24px;color:#666;">${origin}</td><td>${o.loads}</td><td>${round2(o.tons)}</td><td>${fmt(o.gross)}</td></tr>`;
+    }).join('');
+    return `<tr style="font-weight:700;background:#f9fafb;"><td>${carrier}</td><td>${c.loads}</td><td>${round2(c.tons)}</td><td>${fmt(c.gross)}</td></tr>${originRows}`;
+  }).join('');
+
+  const payrollRowsHtml = Object.keys(data.byDriver).sort().map(name => {
+    const r = data.byDriver[name];
+    return `<tr><td>${name}</td><td style="color:#666;font-size:11px;">${payModeLabel(r.payMode)}</td><td>${r.loads}</td><td>${fmt(r.gross)}</td><td style="font-weight:700;">${fmt(r.takeHome)}</td></tr>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Carrier & Payroll Report — ${rangeLabel}</title>
+<style>
+  @page{margin:18mm;}
+  body{font-family:Arial,Helvetica,sans-serif;background:#fff;color:#111;font-size:13px;margin:0;padding:24px;box-sizing:border-box;max-width:900px;margin-left:auto;margin-right:auto;}
+  .header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f5a623;padding-bottom:14px;margin-bottom:20px;}
+  .logo{display:flex;align-items:center;gap:12px;}
+  .logo img{height:60px;width:auto;display:block;}
+  .logo-title{font-size:22px;font-weight:800;letter-spacing:0.03em;}
+  .logo-sub{font-size:11px;color:#888;margin-top:2px;}
+  .inv-meta{text-align:right;}
+  .inv-num{font-size:20px;font-weight:800;color:#111;}
+  .inv-meta div{font-size:11px;color:#666;line-height:1.7;}
+  .section-title{font-size:14px;font-weight:800;margin:22px 0 10px;padding-bottom:6px;border-bottom:2px solid #111;}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px;}
+  th{text-align:left;padding:7px 8px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #e5e7eb;background:#111;color:#f5a623;}
+  td{padding:7px 8px;border-bottom:1px solid #f3f4f6;}
+  tr:last-child td{border-bottom:none;}
+  .total-row td{font-weight:800;background:#111;color:#f5a623;font-size:13px;}
+  .footer{margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:10px;color:#999;display:flex;justify-content:space-between;}
+  @media print{.no-print{display:none;}}
+  @media(max-width:480px){
+    body{padding:14px;font-size:12px;}
+    .header{flex-direction:column;gap:10px;}
+    .inv-meta{text-align:left;}
+    table{font-size:10px;}
+    th,td{padding:5px;}
+    .footer{flex-direction:column;gap:4px;}
+  }
+</style>
+</head><body>
+<div class="header">
+  <div class="logo">
+    <img src="data:image/png;base64,${EA_LOGO_B64}" alt="${s.fromName||'Earth Angels Express'}">
+    <div><div class="logo-title">${s.fromName||'Earth Angels Express'}</div><div class="logo-sub">${s.fromAddress||''}</div></div>
+  </div>
+  <div class="inv-meta">
+    <div class="inv-num">CARRIER & PAYROLL REPORT</div>
+    <div><strong>Period:</strong> ${rangeLabel}</div>
+    <div><strong>Generated:</strong> ${printDate}</div>
+  </div>
+</div>
+
+<div class="section-title">What Each Carrier Paid</div>
+<div style="overflow-x:auto;">
+<table>
+<thead><tr><th>Carrier / Origin</th><th>Loads</th><th>Tons</th><th>Gross ($)</th></tr></thead>
+<tbody>
+${carrierRowsHtml}
+<tr class="total-row"><td>TOTAL</td><td>${data.loads.length}</td><td>${round2(data.totalTons)}</td><td>${fmt(data.totalGross)}</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="section-title">Payroll Summary</div>
+<div style="overflow-x:auto;">
+<table>
+<thead><tr><th>Driver</th><th>Pay Method</th><th>Loads</th><th>Gross Value of Loads</th><th>Take-Home Pay</th></tr></thead>
+<tbody>
+${payrollRowsHtml}
+<tr class="total-row"><td>TOTAL SENT TO PAYROLL</td><td></td><td>${Object.values(data.byDriver).reduce((a,r)=>a+r.loads,0)}</td><td>${fmt(Object.values(data.byDriver).reduce((a,r)=>a+r.gross,0))}</td><td>${fmt(data.totalPayroll)}</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="footer">
+  <span>${s.fromName||'Earth Angels Express'} — Carrier & Payroll Report — ${rangeLabel}</span>
+  <span>Generated ${printDate}</span>
+</div>
+<div class="no-print" style="display:flex;justify-content:center;gap:10px;margin-top:24px;">
+  <button onclick="window.print()" style="background:#f5a623;border:none;border-radius:6px;padding:10px 22px;font-weight:700;cursor:pointer;">🖨️ Print / Save PDF</button>
+  <button onclick="window.close()" style="background:#eee;color:#111;border:1px solid #ccc;border-radius:6px;padding:10px 22px;font-weight:700;cursor:pointer;">✕ Close</button>
+</div>
+</body></html>`;
+
+  const w = window.open('', '_blank');
+  if (w) { w.document.write(html); w.document.close(); w.focus(); }
+  else showGlobalAlert('Pop-up blocked — allow pop-ups for this site to print.', 'err');
 }
 
 function exportPercentageDriverReport() {
