@@ -4860,7 +4860,17 @@ function renderFSCRateList() {
     if (summaryEl) summaryEl.textContent = 'No weeks entered yet';
     return;
   }
-  if (summaryEl) summaryEl.textContent = `${rates.length} entr${rates.length===1?'y':'ies'} — most recent: ${rates[0].carrier||'Amrize'} ${rates[0].fsc_pct}% — tap to view all`;
+  // Show the most recent entry for EACH carrier, not just one overall — otherwise a carrier
+  // with an older "most recent" week (e.g. Preferred Materials hasn't had a new one entered
+  // as recently as Amrize) silently disappears from this summary line even though its data
+  // is right there in the full list below.
+  const latestByCarrier = {};
+  rates.forEach(r => {
+    const c = r.carrier || 'Amrize';
+    if (!latestByCarrier[c]) latestByCarrier[c] = r; // rates is already sorted newest-first
+  });
+  const summaryParts = Object.keys(latestByCarrier).sort().map(c => `${c}: ${latestByCarrier[c].fsc_pct}%`);
+  if (summaryEl) summaryEl.textContent = `${summaryParts.join(' · ')} — tap to view all ${rates.length} entr${rates.length===1?'y':'ies'}`;
   el.innerHTML = rates.map(r => {
     const monday = parseLocalDate(getMondayOfWeek(r.week_start));
     const sunday = new Date(monday); sunday.setDate(monday.getDate()+6);
