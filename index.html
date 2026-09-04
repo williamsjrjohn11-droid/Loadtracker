@@ -2886,8 +2886,11 @@ function renderDash() {
   }
   const _eaFSC = document.getElementById('m-ea-fsc');
   if (_eaFSC) {
+    // Each ticket's own carrier determines which FSC% applies — Amrize and Preferred
+    // Materials (and anyone added later) can have a different rate for the same week.
     const eaFscTotal = eaTickets.reduce((a,t) => {
-      const pct = getFSCPctForDate(t.date);
+      const carrier = detectCarrierAndOrigin(t).carrier;
+      const pct = getFSCPctForDate(t.date, carrier);
       if (pct === null) return a;
       return a + parseFloat(t.tons||0) * parseFloat(t.rate_direct||0) * (pct/100);
     }, 0);
@@ -3101,7 +3104,11 @@ function computeEaLoadMetrics(tickets) {
     const gross = tons * rate;
     eaMade += gross;
     driverMade += tons * driverPayRate(t, driverByName[t.driver]);
-    const pct = getFSCPctForDate(t.date);
+    // Each ticket's own carrier determines which FSC% applies — a mixed day of Amrize and
+    // Preferred Materials loads correctly uses each one's own published rate, not one rate
+    // applied to everything.
+    const carrier = detectCarrierAndOrigin(t).carrier;
+    const pct = getFSCPctForDate(t.date, carrier);
     if (pct !== null) fscTotal += gross * (pct/100);
   });
   return { loads: tickets.length, eaMade, driverMade, fscTotal };
@@ -4049,7 +4056,11 @@ function renderPayoutList() {
         ? '<span class="badge badge-green">✓ Matched</span>'
         : '<span class="badge badge-amber">⏳ Not settled yet</span>';
     const savedFsc = _payoutFSCPrefill[t.ticket];
-    const autoFscPct = getFSCPctForDate(t.date);
+    // Each ticket's own carrier determines which FSC% applies here too — this pre-fills the
+    // per-load FSC input on Review Payout, and a driver hauling both Amrize and Preferred
+    // Materials loads in the same settlement needs each load's own correct rate, not one
+    // rate applied across the board.
+    const autoFscPct = getFSCPctForDate(t.date, detectCarrierAndOrigin(t).carrier);
     const pctMode = pctModeDriver;
     const fscPct = pctMode ? 0 : (savedFsc !== undefined ? savedFsc.pct : (autoFscPct !== null ? autoFscPct : ''));
     const isAuto = !pctMode && savedFsc === undefined && autoFscPct !== null;
@@ -4588,7 +4599,9 @@ function buildFSCDetailsAuto(tickets, driver) {
   let total = 0;
   tickets.forEach(t => {
     const subtotal = parseFloat(t.tons||0) * driverPayRate(t, driver);
-    const pct = getFSCPctForDate(t.date) || 0;
+    // Each ticket's own carrier determines which FSC% applies — a salary driver hauling both
+    // Amrize and Preferred Materials loads needs each load's own correct rate.
+    const pct = getFSCPctForDate(t.date, detectCarrierAndOrigin(t).carrier) || 0;
     const amt = subtotal * (pct/100);
     details[t.ticket] = { pct, amt };
     total += amt;
@@ -5009,15 +5022,33 @@ function openFSCRateForm(id) {
   const wsInput = document.getElementById('fsc-rate-week-start');
   wsInput.value = r ? toDateInputValue(r.week_start) : toDateInputValue(getMondayOfWeek(new Date().toISOString()));
   wsInput.dataset.editId = r ? r.id : '';
-  document.getElementById('fsc-rate-carrier').value = r ? (r.carrier || 'Amrize') : 'Amrize';
-  // Populate the carrier suggestion list from every carrier already seen, so it grows on its
-  // own as new customers get added instead of needing a code change each time.
-  const knownCarriers = [...new Set(['Amrize', 'Preferred Materials', ...(DB.fscRates||[]).map(x => x.carrier || 'Amrize')])];
-  document.getElementById('fsc-rate-carrier-list').innerHTML = knownCarriers.map(c => `<option value="${c.replace(/"/g,'&quot;')}">`).join('');
+  populateFscCarrierSelect(r ? (r.carrier || 'Amrize') : '');
   document.getElementById('fsc-rate-pct').value = r ? r.fsc_pct : '';
   document.getElementById('fsc-rate-notes').value = r ? (r.notes||'') : '';
   document.getElementById('fsc-rate-delete-btn').style.display = r ? 'inline-block' : 'none';
   document.getElementById('fsc-rate-modal').classList.add('open');
+}
+
+// Builds the Carrier dropdown fresh each time the form opens. For a NEW entry, this
+// deliberately does NOT pre-select any real carrier — a blank, disabled placeholder is
+// selected instead, forcing an explicit choice every time. That's the fix for a real issue:
+// the old version defaulted every new entry to "Amrize" text, so adding a second carrier's
+// rate without noticing and clearing that field would silently re-save over Amrize's actual
+// entry for the week instead of creating a separate one for the new carrier.
+function populateFscCarrierSelect(selectedCarrier) {
+  const select = document.getElementById('fsc-rate-carrier');
+  const knownCarriers = [...new Set(['Amrize', 'Preferred Materials', ...(DB.fscRates||[]).map(x => x.carrier || 'Amrize')])].sort();
+  let optionsHtml = selectedCarrier ? '' : `<option value="" disabled selected>— Select carrier —</option>`;
+  optionsHtml += knownCarriers.map(c => `<option value="${c.replace(/"/g,'&quot;')}" ${c===selectedCarrier?'selected':''}>${c}</option>`).join('');
+  optionsHtml += `<option value="__new__">➕ Type a new carrier…</option>`;
+  select.innerHTML = optionsHtml;
+  document.getElementById('fsc-rate-carrier-custom-wrap').style.display = 'none';
+  document.getElementById('fsc-rate-carrier-custom').value = '';
+}
+
+function onFscRateCarrierChange() {
+  const select = document.getElementById('fsc-rate-carrier');
+  document.getElementById('fsc-rate-carrier-custom-wrap').style.display = select.value === '__new__' ? 'block' : 'none';
 }
 
 function closeFSCRateModal() {
@@ -5028,7 +5059,9 @@ async function saveFSCRateForm() {
   const wsInput = document.getElementById('fsc-rate-week-start');
   const weekStartRaw = wsInput.value;
   if (!weekStartRaw) { showGlobalAlert('⚠ Pick a week start date.', 'err'); return; }
-  const carrier = document.getElementById('fsc-rate-carrier').value.trim() || 'Amrize';
+  let carrier = document.getElementById('fsc-rate-carrier').value;
+  if (carrier === '__new__') carrier = document.getElementById('fsc-rate-carrier-custom').value.trim();
+  if (!carrier) { showGlobalAlert('⚠ Select or type a carrier — this doesn\'t default to Amrize anymore, on purpose, so a new entry can\'t silently overwrite the wrong one.', 'err'); return; }
   const pct = parseFloat(document.getElementById('fsc-rate-pct').value);
   if (isNaN(pct)) { showGlobalAlert('⚠ Enter a valid FSC%.', 'err'); return; }
   const notes = document.getElementById('fsc-rate-notes').value.trim();
@@ -5187,7 +5220,9 @@ function previewInvoiceRange() {
     const prevInv = billedElsewhere ? (DB.eaInvoices||[]).find(inv => inv.id === t.ea_invoice_id) : null;
     const amount = parseFloat(t.tons||0) * parseFloat(t.rate_direct||0);
     const savedFsc = _invoiceFSCPrefill[t.ticket];
-    const autoFscPct = getFSCPctForDate(t.date);
+    // Each ticket's own carrier determines which FSC% applies — same reasoning as everywhere
+    // else FSC gets computed.
+    const autoFscPct = getFSCPctForDate(t.date, detectCarrierAndOrigin(t).carrier);
     const fscPct = savedFsc !== undefined ? savedFsc.pct : (autoFscPct !== null ? autoFscPct : '');
     const isAuto = savedFsc === undefined && autoFscPct !== null;
     const noFscRate = autoFscPct === null && savedFsc === undefined;
@@ -6934,9 +6969,11 @@ if ('serviceWorker' in navigator) {
     </div>
     <div class="invoice-field">
       <label>Carrier</label>
-      <input type="text" id="fsc-rate-carrier" list="fsc-rate-carrier-list" placeholder="Amrize">
-      <datalist id="fsc-rate-carrier-list"></datalist>
-      <div style="font-size:11px;color:var(--text3);margin-top:4px;">Each carrier publishes their own FSC% — Amrize and Preferred Materials can have different rates for the same week.</div>
+      <select id="fsc-rate-carrier" onchange="onFscRateCarrierChange()" style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:9px 10px;font-size:14px;font-family:'Barlow',sans-serif;"></select>
+      <div id="fsc-rate-carrier-custom-wrap" style="display:none;margin-top:8px;">
+        <input type="text" id="fsc-rate-carrier-custom" placeholder="Type new carrier name">
+      </div>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">Each carrier publishes their own FSC% — Amrize and Preferred Materials can have different rates for the same week. Double-check this says the right one before saving — a new entry doesn't stay defaulted to whichever carrier was open last.</div>
     </div>
     <div class="invoice-field">
       <label>FSC % (e.g. 10 for 10%)</label>
