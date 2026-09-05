@@ -162,6 +162,10 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
 #snapshot-driver-modal-title{font-family:'Barlow Condensed',sans-serif;font-size:18px;font-weight:700;margin-bottom:14px;}
 .snapshot-driver-row{display:flex;align-items:center;gap:8px;padding:8px 0;cursor:pointer;font-size:14px;}
 .snapshot-driver-row input{width:16px;height:16px;accent-color:var(--green);}
+#ticket-carrier-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;align-items:center;justify-content:center;padding:16px;}
+#ticket-carrier-modal.open{display:flex;}
+#ticket-carrier-modal-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;width:100%;max-width:400px;}
+#ticket-carrier-modal-title{font-family:'Barlow Condensed',sans-serif;font-size:18px;font-weight:700;margin-bottom:6px;}
 #merge-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;align-items:center;justify-content:center;padding:16px;}
 #merge-modal.open{display:flex;}
 #merge-modal-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;width:100%;max-width:440px;max-height:85vh;overflow-y:auto;}
@@ -254,6 +258,7 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
   #snapshot-driver-btn{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   #daily-snapshot-controls{width:100%;justify-content:flex-start;}
   #snapshot-driver-modal-box{padding:14px;}
+  #ticket-carrier-modal-box{padding:14px;}
 }
 @media(max-width:420px){
   #owner-draw-card .card > div:first-child{flex-direction:column;align-items:flex-start !important;}
@@ -6731,16 +6736,45 @@ function editTicketDriver(ticketNum) {
   showGlobalAlert(`✅ Ticket ${ticketNum} assigned to ${driverName}`, 'ok');
 }
 
+let _ticketCarrierEditNum = null;
+
 function editTicketCarrier(ticketNum) {
   const ticket = DB.tickets.find(t => String(t.ticket||'') === String(ticketNum));
   if (!ticket) return;
+  _ticketCarrierEditNum = ticketNum;
+  const autoDetected = detectCarrierAndOrigin(ticket).carrier;
+  document.getElementById('ticket-carrier-modal-sub').textContent = `Ticket ${ticketNum} — auto-detected as: ${autoDetected}`;
   // Suggest every carrier already in use (built-ins plus anything typed in before) so this
   // stays useful as more customers get added, without needing a code change each time.
-  const known = [...new Set(['Amrize', 'Preferred Materials', ...(DB.tickets||[]).map(t => t.carrier_override).filter(Boolean)])];
-  const autoDetected = detectCarrierAndOrigin(ticket).carrier;
-  const input = prompt(`Manually set the carrier for ticket ${ticketNum} — this overrides auto-detection (currently: ${autoDetected}).\n\nKnown carriers: ${known.join(', ')}\n\nLeave blank and OK to clear the override and go back to auto-detect.`, ticket.carrier_override || '');
-  if (input === null) return; // cancelled
-  ticket.carrier_override = input.trim();
+  const known = [...new Set(['Amrize', 'Preferred Materials', ...(DB.tickets||[]).map(t => t.carrier_override).filter(Boolean)])].sort();
+  const select = document.getElementById('ticket-carrier-select');
+  const current = ticket.carrier_override || '';
+  select.innerHTML = `<option value="">— Auto-detect (clear override) —</option>`
+    + known.map(c => `<option value="${c.replace(/"/g,'&quot;')}" ${c===current?'selected':''}>${c}</option>`).join('')
+    + `<option value="__new__">➕ Type a new carrier…</option>`;
+  document.getElementById('ticket-carrier-custom-wrap').style.display = 'none';
+  document.getElementById('ticket-carrier-custom').value = '';
+  document.getElementById('ticket-carrier-modal').classList.add('open');
+}
+
+function onTicketCarrierSelectChange() {
+  const select = document.getElementById('ticket-carrier-select');
+  document.getElementById('ticket-carrier-custom-wrap').style.display = select.value === '__new__' ? 'block' : 'none';
+}
+
+function closeTicketCarrierModal() {
+  document.getElementById('ticket-carrier-modal').classList.remove('open');
+  _ticketCarrierEditNum = null;
+}
+
+function saveTicketCarrierModal() {
+  const ticketNum = _ticketCarrierEditNum;
+  const ticket = DB.tickets.find(t => String(t.ticket||'') === String(ticketNum));
+  if (!ticket) { closeTicketCarrierModal(); return; }
+  let value = document.getElementById('ticket-carrier-select').value;
+  if (value === '__new__') value = document.getElementById('ticket-carrier-custom').value.trim();
+  ticket.carrier_override = value;
+  closeTicketCarrierModal();
   save(); renderAll();
   // Push directly rather than via pushToCloud — that helper can skip an already-cloud-synced,
   // unmatched, photo-less ticket, which would silently drop this specific edit.
@@ -7160,6 +7194,24 @@ if ('serviceWorker' in navigator) {
     <div id="snapshot-driver-checklist" style="max-height:300px;overflow-y:auto;"></div>
     <div id="driver-modal-actions" style="margin-top:14px;">
       <button class="btn btn-green" onclick="applySnapshotDriverSelection()">✅ Done</button>
+    </div>
+  </div>
+</div>
+
+<div id="ticket-carrier-modal">
+  <div id="ticket-carrier-modal-box">
+    <div id="ticket-carrier-modal-title">🏷️ Set Ticket Carrier</div>
+    <div id="ticket-carrier-modal-sub" style="font-size:12px;color:var(--text2);margin-bottom:14px;"></div>
+    <div class="invoice-field">
+      <label>Carrier</label>
+      <select id="ticket-carrier-select" onchange="onTicketCarrierSelectChange()" style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:9px 10px;font-size:14px;font-family:'Barlow',sans-serif;"></select>
+      <div id="ticket-carrier-custom-wrap" style="display:none;margin-top:8px;">
+        <input type="text" id="ticket-carrier-custom" placeholder="Type new carrier name">
+      </div>
+    </div>
+    <div id="driver-modal-actions">
+      <button class="btn" onclick="closeTicketCarrierModal()">Cancel</button>
+      <button class="btn btn-green" onclick="saveTicketCarrierModal()">✅ Save</button>
     </div>
   </div>
 </div>
