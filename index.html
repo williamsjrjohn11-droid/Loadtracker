@@ -645,7 +645,7 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
       </div>
       <div class="card-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;margin:14px 0 0;font-size:12px;" onclick="toggleMetricsSection('fsc-rate-list','fsc-rate-list-arrow','block')">
         <span id="fsc-rate-list-summary">No weeks entered yet</span>
-        <span id="fsc-rate-list-arrow" style="font-size:12px;color:var(--text3);transition:transform .15s;transform:rotate(-90deg);">▼</span>
+        <span id="fsc-rate-list-arrow" style="font-size:12px;color:var(--text3);transition:transform .15s;transform:rotate(-90deg);flex-shrink:0;">▼</span>
       </div>
       <div id="fsc-rate-list" style="margin-top:10px;display:none;"><div class="empty"><span class="empty-icon">⛽</span>No FSC rates set yet</div></div>
     </div>
@@ -4873,17 +4873,21 @@ function renderFSCRateList() {
     if (summaryEl) summaryEl.textContent = 'No weeks entered yet';
     return;
   }
-  // Show the most recent entry for EACH carrier, not just one overall — otherwise a carrier
-  // with an older "most recent" week (e.g. Preferred Materials hasn't had a new one entered
-  // as recently as Amrize) silently disappears from this summary line even though its data
-  // is right there in the full list below.
-  const latestByCarrier = {};
-  rates.forEach(r => {
-    const c = r.carrier || 'Amrize';
-    if (!latestByCarrier[c]) latestByCarrier[c] = r; // rates is already sorted newest-first
-  });
-  const summaryParts = Object.keys(latestByCarrier).sort().map(c => `${c}: ${latestByCarrier[c].fsc_pct}%`);
-  if (summaryEl) summaryEl.textContent = `${summaryParts.join(' · ')} — tap to view all ${rates.length} entr${rates.length===1?'y':'ies'}`;
+  // Show TODAY's actually-active rate for EACH carrier — not just whichever week was most
+  // recently typed in. If you enter next week's rate a few days early, "most recently
+  // entered" would jump ahead and show that instead of the rate that's actually in effect
+  // right now, which is exactly the mismatch this was showing (23% really active, but a
+  // pre-entered future week's 22% displayed instead). This reuses the same lookup every load
+  // actually gets priced with, so the summary can never disagree with real settlements.
+  const today = new Date().toISOString().slice(0,10);
+  const allCarriers = [...new Set(rates.map(r => r.carrier || 'Amrize'))].sort();
+  const currentByCarrier = allCarriers.map(c => ({ carrier: c, pct: getFSCPctForDate(today, c) })).filter(x => x.pct !== null);
+  if (summaryEl) {
+    const summaryHtml = currentByCarrier.length
+      ? currentByCarrier.map(x => `<div>${x.carrier}: <strong>${x.pct}%</strong></div>`).join('')
+      : '<div>No current-week rate set for any carrier</div>';
+    summaryEl.innerHTML = summaryHtml + `<div style="font-size:11px;color:var(--text3);margin-top:4px;">Tap to view all ${rates.length} entr${rates.length===1?'y':'ies'}</div>`;
+  }
   el.innerHTML = rates.map(r => {
     const monday = parseLocalDate(getMondayOfWeek(r.week_start));
     const sunday = new Date(monday); sunday.setDate(monday.getDate()+6);
