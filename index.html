@@ -5594,14 +5594,17 @@ ${(salaryMode && !hasHistoricalLoads) ? '' : `
 ${hasHistoricalLoads ? '<div style="font-size:11px;color:#888;margin-bottom:4px;">Loads completed this period — shown for reference; pay is a flat weekly salary, not based on these figures.</div>' : ''}
 <div style="overflow-x:auto;">
 <table>
-<thead><tr><th>#</th><th>Date</th><th>Ticket #</th><th>Truck #</th><th>Pickup</th><th>Deliver</th><th>Tons</th>${isPercentageDriver(d) ? '' : '<th>Rate</th>'}<th>Total</th>${isPercentageDriver(d) ? '' : '<th>FSC</th>'}</tr></thead>
+<thead><tr><th>#</th><th>Date</th><th>Ticket #</th><th>Truck #</th><th>Company</th><th>Pickup</th><th>Deliver</th><th>Tons</th>${isPercentageDriver(d) ? '' : '<th>Rate</th>'}<th>Total</th>${isPercentageDriver(d) ? '' : '<th>FSC</th>'}</tr></thead>
 <tbody>
 ${rows.map((t,i) => {
   const rate = driverPayRate(t, d);
   const rateCell = fmt(rate);
   const fscRow = fscDetails[t.ticket];
   const fscCell = fscRow ? `${fmt(fscRow.amt)} (${fscRow.pct}%)` : '—';
-  return `<tr><td>${i+1}</td><td>${cleanDate(t.date)||'—'}</td><td>${t.ticket||'—'}</td><td>${t.truck||'—'}</td><td>${t.pickup||'—'}</td><td>${t.deliver||'—'}</td><td>${parseFloat(t.tons||0).toFixed(2)}</td>${isPercentageDriver(d) ? '' : `<td>${rateCell}</td>`}<td>${fmt(parseFloat(t.tons||0)*rate)}</td>${isPercentageDriver(d) ? '' : `<td>${fscCell}</td>`}</tr>`;
+  // Abbreviated so it doesn't crowd the row — full names are still visible on the Carrier &
+  // Payroll Report and in the Rates tab if the shorthand ever needs disambiguating.
+  const carrierLabel = detectCarrierAndOrigin(t).carrier.replace('Preferred Materials', 'Preferred').replace('Other / Unmatched', 'Unmatched');
+  return `<tr><td>${i+1}</td><td>${cleanDate(t.date)||'—'}</td><td>${t.ticket||'—'}</td><td>${t.truck||'—'}</td><td>${carrierLabel}</td><td>${t.pickup||'—'}</td><td>${t.deliver||'—'}</td><td>${parseFloat(t.tons||0).toFixed(2)}</td>${isPercentageDriver(d) ? '' : `<td>${rateCell}</td>`}<td>${fmt(parseFloat(t.tons||0)*rate)}</td>${isPercentageDriver(d) ? '' : `<td>${fscCell}</td>`}</tr>`;
 }).join('')}
 </tbody>
 </table>
