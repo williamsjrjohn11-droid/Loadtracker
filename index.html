@@ -2858,7 +2858,7 @@ function renderDash() {
   const ytd = DB.settlements.reduce((a, s) => a + parseFloat(s.net_total || 0), 0);
   const loads = DB.settlements.reduce((a, s) => a + (s.rows || []).length, 0);
   const tons = DB.settlements.reduce((a, s) => a + (s.rows || []).reduce((b, r) => b + parseFloat(r.tons || 0), 0), 0);
-  const _ackN = (window.LT_ACK ? window.LT_ACK.loadAckNotes() : {}); const discs = DB.tickets.filter(t => t.has_discrepancy && !_ackN[String(t.ticket)]).length;
+  const discs = DB.tickets.filter(t => t.has_discrepancy && !t.ack_note).length;
   // EA tickets now count too — once Amrize sends their settlement, EA loads reconcile the same way Axelar does.
   const awaiting = DB.tickets.filter(t => !t.matched && !t.error && t.ticket !== 'unknown').length;
   const fees = DB.settlements.reduce((a,s) => a + parseFloat(s.broker_fee_amt||0), 0);
@@ -2945,18 +2945,16 @@ function renderDash() {
   const ae = document.getElementById('await-list');
   // Tons mismatches — the real money disputes
   if (de) {
-    const ackNotes = (window.LT_ACK ? window.LT_ACK.loadAckNotes() : {});
-    const unacked = dt.filter(t => !ackNotes[String(t.ticket)]);
-    const acked   = dt.filter(t =>  ackNotes[String(t.ticket)]);
+    const unacked = dt.filter(t => !t.ack_note);
+    const acked   = dt.filter(t =>  t.ack_note);
     const makeRow = (t, isAcked) => {
-      const note = isAcked ? ackNotes[String(t.ticket)] : null;
       const tY = parseFloat(t.tons||0).toFixed(2);
       const tS = parseFloat(t.settled_tons||0).toFixed(2);
       const bizBadge = (t.business||'axelar')==='ea' ? '<span class="badge" style="background:rgba(66,133,244,0.15);color:#4285F4;margin-right:6px;">EA</span>' : '';
       const badge = isAcked
-        ? `<span class="badge badge-amber" title="${note.note}">✓ Acknowledged</span>`
+        ? `<span class="badge badge-amber" title="${(t.ack_note||'').replace(/"/g,'&quot;')}">✓ Acknowledged</span>`
         : `<span class="badge badge-red">Tons off</span><button class="ack-btn" onclick="openAckModal('${t.ticket}','${tY}','${tS}')">Acknowledge</button>`;
-      const noteHtml = isAcked ? `<div style="font-size:11px;color:var(--amber);margin-top:2px;">📝 ${note.note}</div>` : '';
+      const noteHtml = isAcked ? `<div style="font-size:11px;color:var(--amber);margin-top:2px;">📝 ${t.ack_note}</div>` : '';
       return `<div class="disc-row" style="flex-wrap:wrap;"><span style="color:${isAcked?'var(--amber)':'var(--red)'}">⚠</span><span style="flex:1">${bizBadge}Ticket <strong>${t.ticket}</strong> — your ticket: <strong>${tY} tons</strong> vs settled: <strong>${tS} tons</strong>${noteHtml}</span>${badge}</div>`;
     };
     if (!dt.length) {
@@ -3268,7 +3266,7 @@ function renderTickets() {
 }
 
 function renderTicketRow(x) {
-  const _ackMap = (window.LT_ACK ? window.LT_ACK.loadAckNotes() : {}); const _isAcked = x.has_discrepancy && _ackMap[String(x.ticket)]; const badge = x.error ? `<span class="badge badge-gray">Error</span>` : x.has_discrepancy ? `<span class="badge badge-red">⚠ Mismatch${_isAcked ? ' 📝' : ''}</span>` : !x.matched ? `<span class="badge badge-amber">Not settled</span>` : `<span class="badge badge-green">✓ Matched</span>`;
+  const _isAcked = x.has_discrepancy && !!x.ack_note; const badge = x.error ? `<span class="badge badge-gray">Error</span>` : x.has_discrepancy ? `<span class="badge badge-red">⚠ Mismatch${_isAcked ? ' 📝' : ''}</span>` : !x.matched ? `<span class="badge badge-amber">Not settled</span>` : `<span class="badge badge-green">✓ Matched</span>`;
   const tc = x.matched && x.has_discrepancy ? `<td style="color:var(--red);font-weight:600;">${parseFloat(x.tons||0).toFixed(2)}</td>` : `<td>${x.tons ? parseFloat(x.tons).toFixed(2) : '—'}</td>`;
   const photoBtn = x.photo_url ? `<a href="#" onclick="viewPhoto('${x.photo_url}');return false;" style="font-size:12px;text-decoration:none;margin-left:3px;" title="View photo">📷</a>` : '';
   const editBtn = `<button onclick="editTicket('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text3);margin-left:3px;padding:0;" title="Edit ticket number">✏️</button>`;
@@ -6402,7 +6400,7 @@ function exportEarningsReport(businessFilter) {
   const loads = settlements.reduce((a,s)=>a+(s.rows||[]).length,0);
   const tons = settlements.reduce((a,s)=>a+(s.rows||[]).reduce((b,r)=>b+parseFloat(r.tons||0),0),0);
   const scopedTickets = DB.tickets.filter(t => (t.business||'axelar') === businessFilter);
-  const _ackN2 = (window.LT_ACK ? window.LT_ACK.loadAckNotes() : {}); const discs = scopedTickets.filter(t=>t.has_discrepancy && !_ackN2[String(t.ticket)]).length;
+  const discs = scopedTickets.filter(t=>t.has_discrepancy && !t.ack_note).length;
   const unmatched = scopedTickets.filter(t=>!t.matched&&!t.error&&t.ticket!=='unknown').length;
   const fmt = (n)=>'$'+parseFloat(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 
@@ -7184,20 +7182,10 @@ if ('serviceWorker' in navigator) {
 
 <script>
 // ── Acknowledge mismatch logic ──────────────────────────────────────────────
+// Stored directly on the ticket record (ack_note/ack_ts) and synced through the same cloud
+// pipeline as every other ticket edit — this used to live in browser localStorage only, which
+// meant acknowledging on one device never showed up when checking from another.
 (function(){
-  const STORE_KEY = 'lt_ack_notes';
-
-  function loadAckNotes() {
-    try { return JSON.parse(localStorage.getItem(STORE_KEY) || '{}'); } catch(e) { return {}; }
-  }
-  function saveAckNotes(notes) {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(notes)); } catch(e) {}
-  }
-
-  // Expose so renderDiscrepancies can read it
-  window.LT_ACK = { loadAckNotes, saveAckNotes };
-
-  // Modal logic
   let _pendingTicket = null;
   const modal   = document.getElementById('ack-modal');
   const sub     = document.getElementById('ack-modal-sub');
@@ -7220,14 +7208,20 @@ if ('serviceWorker' in navigator) {
     const note = input.value.trim();
     if (!note) { input.style.border = '1px solid var(--red)'; return; }
     input.style.border = '';
-    const notes = loadAckNotes();
-    notes[String(_pendingTicket)] = { note, ts: new Date().toISOString() };
-    saveAckNotes(notes);
+    const ticket = (typeof DB !== 'undefined' && DB.tickets || []).find(t => String(t.ticket) === String(_pendingTicket));
     modal.classList.remove('open');
+    const ticketNum = _pendingTicket;
     _pendingTicket = null;
-    // Re-render the dashboard discrepancy list
-    if (typeof renderDiscrepancies === 'function') renderDiscrepancies();
+    if (!ticket) return;
+    ticket.ack_note = note;
+    ticket.ack_ts = new Date().toISOString();
+    if (typeof save === 'function') save();
+    if (typeof renderAll === 'function') renderAll();
     else if (typeof renderDash === 'function') renderDash();
+    if (typeof gasPost === 'function') {
+      gasPost({action: 'saveTicket', ticket: ticket})
+        .catch(() => { if (typeof showGlobalAlert === 'function') showGlobalAlert('⚠️ Saved locally but cloud sync failed for ticket ' + ticketNum + ' — try Sync Now.', 'err'); });
+    }
   });
 })();
 </script>
