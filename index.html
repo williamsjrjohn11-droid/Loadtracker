@@ -2455,9 +2455,24 @@ async function processTickets() {
         mt = 'image/jpeg';
       }
       const block = mt.includes('pdf') ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } } : { type: 'image', source: { type: 'base64', media_type: mt, data: b64 } };
-      const text = await callClaude([{ role: 'user', content: [block, { type: 'text', text: 'Extract load ticket data. Return ONLY valid JSON, no markdown. This may be an Amrize-style ticket (has TRUCK NO./PLANT CODE/HAULER fields) or a Preferred Materials-style ticket (has Yard/Truck/Driver Delivery Location fields instead — no plant code system). Format: {"ticket":"#, from TICKET # in the top right, or Ticket # field","date":"date","pickup":"pickup location — for a Preferred-style ticket, use the Yard name shown top-left, e.g. Grayson County Sand & Gravel","deliver":"delivery location — for a Preferred-style ticket, use the stamped DRIVER DELIVERY LOCATION text, e.g. MELISSA","tons":"the NET tons figure specifically (not Gross, not M-Tons/metric tons) — for a ticket with a Tons/Pounds/M-Tons table, use the Net row\'s Tons column","hauler_number":"if shown, the value next to HAULER: on the ticket","truck_number":"if shown, the value next to TRUCK NO. on an Amrize-style ticket specifically","plant_code":"if shown, the code like P4958 next to CUSTOMER: or ZONE: — format is P then 4 digits","origin_hint":"the supplier/yard at top of ticket, e.g. Ambrose Sand & Gravel, Melissa Yard Crushed Stone, Royse City Yard, or Grayson County Sand & Gravel","supplier_truck_id":"if this is a Preferred-style ticket, the full value next to Truck: near the top, e.g. 04 - AG TRANSPORT — this is the CARRIER\'S own internal truck/driver reference, distinct from TRUCK NO.","material":"if shown","time":"if shown, the value next to TIME on the ticket, e.g. 1:59 pm","customer_name":"if shown, the value next to CUSTOMER NAME on the ticket, e.g. MCKINNEY READY MIX PLANT","customer_number":"if shown, the value next to CUSTOMER: on the ticket (may match the zone code)","zone":"if shown, the value next to ZONE: on the ticket","product_code":"if shown, the value next to PRODUCT CODE on the ticket","product":"if shown, the value next to PRODUCT on the ticket, e.g. SG,CONCRETE SAND,#4-#200,W"}' }] }], 600);
+      const text = await callClaude([{ role: 'user', content: [block, { type: 'text', text: 'Extract load ticket data. Return ONLY valid JSON, no markdown. This may be an Amrize-style ticket (has TRUCK NO./PLANT CODE/HAULER fields) or a Preferred Materials-style ticket (has Yard/Truck/Driver Delivery Location fields instead — no plant code system). Format: {"ticket":"#, from TICKET # in the top right, or Ticket # field","date":"date","pickup":"pickup location — for a Preferred-style ticket, use the Yard name shown top-left, e.g. Grayson County Sand & Gravel","deliver":"delivery location — for a Preferred-style ticket, use the stamped DRIVER DELIVERY LOCATION text, e.g. MELISSA","tons":"the NET tons figure specifically (not Gross, not M-Tons/metric tons) — for a ticket with a Tons/Pounds/M-Tons table, use the Net row\'s Tons column","gross_tons":"if the same weight table shows a Gross row, its Tons value — otherwise omit this field entirely","tare_tons":"if the same weight table shows a Tare row, its Tons value — otherwise omit this field entirely","hauler_number":"if shown, the value next to HAULER: on the ticket","truck_number":"if shown, the value next to TRUCK NO. on an Amrize-style ticket specifically","plant_code":"if shown, the code like P4958 next to CUSTOMER: or ZONE: — format is P then 4 digits","origin_hint":"the supplier/yard at top of ticket, e.g. Ambrose Sand & Gravel, Melissa Yard Crushed Stone, Royse City Yard, or Grayson County Sand & Gravel","supplier_truck_id":"if this is a Preferred-style ticket, the full value next to Truck: near the top, e.g. 04 - AG TRANSPORT — this is the CARRIER\'S own internal truck/driver reference, distinct from TRUCK NO.","material":"if shown","time":"if shown, the value next to TIME on the ticket, e.g. 1:59 pm","customer_name":"if shown, the value next to CUSTOMER NAME on the ticket, e.g. MCKINNEY READY MIX PLANT","customer_number":"if shown, the value next to CUSTOMER: on the ticket (may match the zone code)","zone":"if shown, the value next to ZONE: on the ticket","product_code":"if shown, the value next to PRODUCT CODE on the ticket","product":"if shown, the value next to PRODUCT on the ticket, e.g. SG,CONCRETE SAND,#4-#200,W"}' }] }], 600);
       const t = JSON.parse(text);
       t.file = f.name;
+      // Weight-math safety check — Net should equal Gross minus Tare. If the ticket's
+      // scale table showed all three, verify the math instead of trusting the single
+      // "tons" (Net) value blindly. Catches the AI (or a person) grabbing the wrong row
+      // from a Gross/Tare/Net table, which otherwise silently pays or records the wrong tons.
+      t.gross_tons = t.gross_tons !== undefined && t.gross_tons !== null && t.gross_tons !== '' ? parseFloat(t.gross_tons) : null;
+      t.tare_tons = t.tare_tons !== undefined && t.tare_tons !== null && t.tare_tons !== '' ? parseFloat(t.tare_tons) : null;
+      if (t.gross_tons !== null && t.tare_tons !== null && !isNaN(t.gross_tons) && !isNaN(t.tare_tons)) {
+        const expectedNet = t.gross_tons - t.tare_tons;
+        const actualNet = parseFloat(t.tons || 0);
+        t._weightCheckDiff = Math.abs(expectedNet - actualNet);
+        t._weightMismatch = t._weightCheckDiff > 0.15; // small tolerance for rounding
+        t._expectedNet = expectedNet;
+      } else {
+        t._weightMismatch = false;
+      }
       // Auto-tag business from hauler number extracted by AI.
       // 4010550 = Axelar sub-haul, 4011121 = EA direct-haul.
       // A Preferred Materials-style ticket has no hauler number at all (that field is
@@ -2637,16 +2652,33 @@ function updateReviewBadge(i) {
   t._dup = !!DB.tickets.find(x => String(x.ticket||'').replace(/\s/g,'') === String(t.ticket||'').replace(/\s/g,'') && String(t.ticket||'').trim() !== '');
   const tonsDiff = pv.matched && t.tons ? Math.abs(parseFloat(t.tons||0) - parseFloat(pv.tons||0)) : 0;
   const hasDisc = tonsDiff > 0.1;
+  // Re-check Gross/Tare/Net math against whatever tons value is currently in the field —
+  // if the user just corrected it by hand, this clears the warning once it's fixed.
+  if (t.gross_tons !== null && t.tare_tons !== null && !isNaN(t.gross_tons) && !isNaN(t.tare_tons)) {
+    t._expectedNet = t.gross_tons - t.tare_tons;
+    t._weightCheckDiff = Math.abs(t._expectedNet - parseFloat(t.tons || 0));
+    t._weightMismatch = t._weightCheckDiff > 0.15;
+  }
   let statusBadge;
   if (t._dup) statusBadge = '<span class="badge badge-amber">duplicate</span>';
   else if (t._scanError) statusBadge = '<span class="badge badge-red">scan failed</span>';
+  else if (t._weightMismatch) statusBadge = `<span class="badge badge-red">⚠ tons don't add up</span>`;
   else if (hasDisc) statusBadge = `<span class="badge badge-red">⚠ tons: paid ${parseFloat(pv.tons).toFixed(2)}</span>`;
   else if (pv.matched) statusBadge = '<span class="badge badge-green">✓ matches ' + (pv.company||'') + '</span>';
   else statusBadge = '<span class="badge badge-gray">no match yet</span>';
   const badgeEl = document.getElementById('ptk-badge-' + i);
   if (badgeEl) badgeEl.innerHTML = statusBadge;
+  const wcheckEl = document.getElementById('ptk-wcheck-' + i);
+  if (wcheckEl) {
+    if (t._weightMismatch) {
+      wcheckEl.style.display = 'block';
+      wcheckEl.innerHTML = `⚠ Tons don't add up — Gross ${t.gross_tons.toFixed(2)} − Tare ${t.tare_tons.toFixed(2)} = ${t._expectedNet.toFixed(2)}, but Net shows ${parseFloat(t.tons||0).toFixed(2)}. Check the ticket photo and fix before saving.`;
+    } else {
+      wcheckEl.style.display = 'none';
+    }
+  }
   const cardEl = document.getElementById('ptk-card-' + i);
-  if (cardEl) cardEl.style.borderColor = t._dup ? 'var(--amber)' : hasDisc ? 'var(--red)' : pv.matched ? 'var(--green)' : 'var(--border)';
+  if (cardEl) cardEl.style.borderColor = t._weightMismatch ? 'var(--red)' : t._dup ? 'var(--amber)' : hasDisc ? 'var(--red)' : pv.matched ? 'var(--green)' : 'var(--border)';
 }
 
 function renderTicketReview() {
@@ -2663,12 +2695,14 @@ function renderTicketReview() {
     let statusBadge;
     if (t._dup) statusBadge = '<span class="badge badge-amber">duplicate</span>';
     else if (t._scanError) statusBadge = '<span class="badge badge-red">scan failed</span>';
+    else if (t._weightMismatch) statusBadge = `<span class="badge badge-red">⚠ tons don't add up</span>`;
     else if (hasDisc) statusBadge = `<span class="badge badge-red">⚠ tons: paid ${parseFloat(pv.tons).toFixed(2)}</span>`;
     else if (pv.matched) statusBadge = '<span class="badge badge-green">✓ matches ' + (pv.company||'') + '</span>';
     else statusBadge = '<span class="badge badge-gray">no match yet</span>';
     const photoBtn = t.photo_url ? `<a href="#" onclick="viewPhoto('${t.photo_url}');return false;" style="font-size:14px;text-decoration:none;" title="View photo">📷</a>` : '';
     const inputStyle = 'width:100%;padding:6px 8px;font-size:13px;background:var(--surface);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:\'Barlow\',sans-serif;';
-    return `<div id="ptk-card-${i}" style="background:var(--surface2);border:1px solid ${t._dup ? 'var(--amber)' : hasDisc ? 'var(--red)' : pv.matched ? 'var(--green)' : 'var(--border)'};border-radius:10px;padding:10px;margin-bottom:8px;">
+    const weightBanner = `<div id="ptk-wcheck-${i}" style="display:${t._weightMismatch ? 'block' : 'none'};background:rgba(230,57,70,0.1);border:1px solid var(--red);border-radius:8px;padding:8px;margin-bottom:8px;font-size:12px;color:var(--red);">${t._weightMismatch ? `⚠ Tons don't add up — Gross ${(t.gross_tons||0).toFixed(2)} − Tare ${(t.tare_tons||0).toFixed(2)} = ${(t._expectedNet||0).toFixed(2)}, but Net shows ${parseFloat(t.tons||0).toFixed(2)}. Check the ticket photo and fix before saving.` : ''}</div>`;
+    return `<div id="ptk-card-${i}" style="background:var(--surface2);border:1px solid ${t._weightMismatch ? 'var(--red)' : t._dup ? 'var(--amber)' : hasDisc ? 'var(--red)' : pv.matched ? 'var(--green)' : 'var(--border)'};border-radius:10px;padding:10px;margin-bottom:8px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
           <input type="checkbox" id="ptk-inc-${i}" ${t._dup ? '' : 'checked'} style="width:16px;height:16px;accent-color:var(--green);">
@@ -2678,10 +2712,11 @@ function renderTicketReview() {
         <span style="font-size:11px;color:var(--text3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${t.file||''}</span>
         <span id="ptk-badge-${i}">${statusBadge}</span>
       </div>
+      ${weightBanner}
       <div style="display:grid;grid-template-columns:1.2fr 1fr 0.7fr;gap:6px;margin-bottom:6px;">
         <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Ticket #</div><input style="${inputStyle}" value="${(t.ticket||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].ticket=this.value;clearTimeout(window._ptkT);window._ptkT=setTimeout(()=>updateReviewBadge(${i}),500);"></div>
         <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Date</div><input style="${inputStyle}" value="${(t.date||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].date=this.value;"></div>
-        <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Tons</div><input style="${inputStyle}" value="${(t.tons||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].tons=this.value;clearTimeout(window._ptkT2);window._ptkT2=setTimeout(()=>updateReviewBadge(${i}),500);"></div>
+        <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Tons${t.gross_tons!==null&&t.gross_tons!==undefined?` <span style="color:var(--text3);text-transform:none;">(G ${t.gross_tons.toFixed(1)} / T ${(t.tare_tons||0).toFixed(1)})</span>`:''}</div><input style="${inputStyle}" value="${(t.tons||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].tons=this.value;clearTimeout(window._ptkT2);window._ptkT2=setTimeout(()=>updateReviewBadge(${i}),500);"></div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
         <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Pickup</div><input style="${inputStyle}" value="${(t.pickup||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].pickup=this.value;"></div>
@@ -2751,6 +2786,15 @@ async function confirmSaveTickets() {
     return cb && cb.checked;
   });
   if (!toSave.length) { showGlobalAlert('No tickets selected to save.', 'err'); return; }
+
+  // Weight-math safety gate — don't let an unresolved Gross/Tare/Net mismatch slide through
+  // silently. Require an explicit "save anyway" decision, same pattern as duplicate detection.
+  const unresolvedMismatches = toSave.filter(t => t._weightMismatch);
+  if (unresolvedMismatches.length) {
+    const list = unresolvedMismatches.map(t => `#${t.ticket || '(no ticket #)'} — Gross ${(t.gross_tons||0).toFixed(2)} − Tare ${(t.tare_tons||0).toFixed(2)} = ${(t._expectedNet||0).toFixed(2)}, but Net shows ${parseFloat(t.tons||0).toFixed(2)}`).join('\n');
+    const proceed = confirm(`⚠ ${unresolvedMismatches.length} ticket(s) still have tons that don't add up:\n\n${list}\n\nDouble-check the photo before saving. Save anyway?`);
+    if (!proceed) return;
+  }
 
   const results = [];
   for (const t of toSave) {
