@@ -609,6 +609,11 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
           <span style="font-size:14px;font-weight:600;color:var(--text);">EA Loads Report</span>
           <span style="font-size:12px;color:var(--text2);font-weight:400;">Ticket, hauler, customer, product — every EA load</span>
         </button>
+        <button class="btn btn-full" style="padding:18px 14px;flex-direction:column;gap:6px;align-items:center;background:var(--surface2);border:1px solid var(--border2);" onclick="scrollToTruckRevCard()">
+          <span style="font-size:28px;">📊</span>
+          <span style="font-size:14px;font-weight:600;color:var(--text);">Truck & Driver Revenue</span>
+          <span style="font-size:12px;color:var(--text2);font-weight:400;">Dashboard, monthly breakdown & load detail workbook</span>
+        </button>
       </div>
     </div>
 
@@ -3494,6 +3499,21 @@ function exportEASnapshotExcel() {
   const rangeLabel = document.getElementById('daily-snapshot-date').value + '_to_' + document.getElementById('snapshot-end-date').value;
   XLSX.writeFile(wb, 'EA_Load_Snapshot_' + rangeLabel + '.xlsx');
   showGlobalAlert('Exported ' + tickets.length + ' load(s) -- matches the numbers shown on screen.', 'ok');
+}
+
+// Jumps down to the Monthly Revenue by Truck & Driver card from the quick-access tile above
+// it, and briefly outlines it so it's obvious the tile actually did something rather than
+// silently exporting with whatever date range happened to be left in the fields.
+function scrollToTruckRevCard() {
+  const el = document.getElementById('truckrev-from');
+  if (!el) return;
+  const card = el.closest('.card');
+  if (!card) return;
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const prevOutline = card.style.outline, prevOffset = card.style.outlineOffset;
+  card.style.outline = '2px solid var(--green)';
+  card.style.outlineOffset = '3px';
+  setTimeout(() => { card.style.outline = prevOutline; card.style.outlineOffset = prevOffset; }, 1500);
 }
 
 function initTruckRevDates() {
