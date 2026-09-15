@@ -384,14 +384,18 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
           <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);padding:4px 8px;" onclick="shiftSnapshotRange(1)">▶</button>
           <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="jumpDailySnapshotToday()">Today</button>
           <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="jumpSnapshotThisWeek()">This Week</button>
+          <button class="btn btn-sm btn-green" onclick="exportEASnapshotExcel()" title="Export the exact loads behind these numbers to an Excel file">⬇ Export Excel</button>
         </div>
       </div>
       <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:10px;" id="weekly-snapshot-label">—</div>
+      <div style="font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:10px;">
+        Only EA (direct-haul) loads in the selected date range/driver/carrier count here — Axelar sub-haul loads never do. <strong>EA Made</strong> = tons × Amrize/Preferred rate on each load (what the load billed, before driver pay or fees). <strong>Driver Made</strong> = each driver's cut of those same loads at their own pay rate — for a salary-mode driver this is a reference figure only, since their real pay is a fixed weekly amount, not tied to individual loads. <strong>FSC</strong> = each load's gross × that carrier's published fuel-surcharge % for that load's date.
+      </div>
       <div class="metrics" id="daily-snapshot-metrics">
-        <div class="metric"><div class="metric-label">Loads Completed</div><div class="metric-value" id="ds-loads">0</div></div>
-        <div class="metric"><div class="metric-label">EA Made (Gross)</div><div class="metric-value green" id="ds-ea-made">$0.00</div></div>
-        <div class="metric"><div class="metric-label">🚚 Driver Made</div><div class="metric-value" style="color:var(--amber);" id="ds-driver-made">$0.00</div></div>
-        <div class="metric"><div class="metric-label">⛽ FSC</div><div class="metric-value" style="color:var(--blue);" id="ds-fsc">$0.00</div></div>
+        <div class="metric" title="Count of EA (direct-haul) tickets in this date range matching the driver/carrier filters above. Excludes Axelar sub-haul loads and any ticket flagged as a scan error."><div class="metric-label">Loads Completed</div><div class="metric-value" id="ds-loads">0</div></div>
+        <div class="metric" title="Sum of tons × rate for every load counted above — the gross value EA billed the carrier, before driver pay, FSC, or any fees."><div class="metric-label">EA Made (Gross)</div><div class="metric-value green" id="ds-ea-made">$0.00</div></div>
+        <div class="metric" title="Sum of what each driver is owed on these loads at their own pay rate (flat $/ton, % of Amrize rate, etc). Salary-mode drivers show a reference figure here — their actual pay is a flat weekly amount set separately."><div class="metric-label">🚚 Driver Made</div><div class="metric-value" style="color:var(--amber);" id="ds-driver-made">$0.00</div></div>
+        <div class="metric" title="Sum of each load's gross × that load's carrier's published FSC% for that load's date — mixed-carrier date ranges correctly blend different carriers' rates."><div class="metric-label">⛽ FSC</div><div class="metric-value" style="color:var(--blue);" id="ds-fsc">$0.00</div></div>
       </div>
       <div id="daily-snapshot-empty" style="display:none;font-size:12px;color:var(--text3);padding-top:6px;">No EA loads scanned for this range yet.</div>
       <div id="snapshot-breakdown-wrap" style="display:none;border-top:1px solid var(--border);margin-top:14px;padding-top:10px;">
@@ -3412,6 +3416,70 @@ function renderDailySnapshot() {
   } else if (breakdownWrap) {
     breakdownWrap.style.display = 'none';
   }
+}
+
+// Rebuilds the exact same filtered ticket set the on-screen EA Load Snapshot metrics are
+// computed from (same date range, driver, and carrier filters) — kept as its own function
+// so the export can never drift out of sync with what renderDailySnapshot() shows.
+function getSnapshotFilteredTickets() {
+  const startInput = document.getElementById('daily-snapshot-date');
+  const endInput = document.getElementById('snapshot-end-date');
+  const carrierSelect = document.getElementById('snapshot-carrier-select');
+  const start = parseLocalDate(startInput.value);
+  const end = parseLocalDate(endInput.value);
+  if (end) end.setHours(23,59,59,999);
+  const selectedCarrier = carrierSelect ? carrierSelect.value : '__all__';
+  const activeDriverSet = _snapshotSelectedDrivers === null
+    ? new Set((DB.drivers||[]).map(d => d.name))
+    : new Set(_snapshotSelectedDrivers);
+  return (DB.tickets||[]).filter(t => {
+    if ((t.business||'axelar') !== 'ea') return false;
+    if (t.error) return false;
+    if (!activeDriverSet.has(t.driver)) return false;
+    if (selectedCarrier !== '__all__' && detectCarrierAndOrigin(t).carrier !== selectedCarrier) return false;
+    const td = parseLocalDate(t.date);
+    if (!td) return false;
+    return start && end && td >= start && td <= end;
+  });
+}
+
+function exportEASnapshotExcel() {
+  const tickets = getSnapshotFilteredTickets();
+  if (!tickets.length) { showGlobalAlert('No EA loads in the current filters to export.', 'err'); return; }
+  const driverByName = {}; (DB.drivers||[]).forEach(d => { driverByName[d.name] = d; });
+
+  const rows = [['Ticket #','Date','Driver','Carrier','Pickup','Deliver','Tons','Rate ($/ton)','EA Made ($)','Driver Pay Rate ($/ton)','Driver Made ($)','FSC %','FSC ($)']];
+  let tTons=0, tEaMade=0, tDriverMade=0, tFsc=0;
+  tickets.sort((a,b) => (parseLocalDate(a.date)||0) - (parseLocalDate(b.date)||0)).forEach(t => {
+    const driver = driverByName[t.driver];
+    const rate = parseFloat(t.rate_direct||0);
+    const tons = parseFloat(t.tons||0);
+    const gross = tons * rate;
+    const payRate = driverPayRate(t, driver);
+    const driverMade = tons * payRate;
+    const carrier = detectCarrierAndOrigin(t).carrier;
+    const pct = getFSCPctForDate(t.date, carrier);
+    const fsc = pct !== null ? gross * (pct/100) : 0;
+    tTons += tons; tEaMade += gross; tDriverMade += driverMade; tFsc += fsc;
+    rows.push([t.ticket||'', cleanDate(t.date), t.driver||'', carrier, t.pickup||'', t.deliver||'', round2(tons), round2(rate), round2(gross), round2(payRate), round2(driverMade), pct===null?'':pct, round2(fsc)]);
+  });
+  rows.push(['TOTAL','','','','','',round2(tTons),'',round2(tEaMade),'',round2(tDriverMade),'',round2(tFsc)]);
+
+  const defRows = [
+    ['Metric','What it includes'],
+    ['Loads Completed','Count of EA (direct-haul) tickets in the selected date range matching the driver/carrier filters. Axelar sub-haul loads and scan-error tickets are never included.'],
+    ['EA Made (Gross)','Sum of tons x rate for every load above -- what EA billed the carrier before driver pay, FSC, or fees.'],
+    ['Driver Made','Sum of each driver\'s cut at their own pay rate (flat $/ton, % of Amrize rate, etc). Salary-mode drivers show a reference figure here only -- their real pay is a fixed weekly amount set separately, not tied to these loads.'],
+    ['FSC','Sum of each load\'s gross x that load\'s carrier\'s published fuel-surcharge % for that load\'s date. A mixed-carrier range correctly blends each carrier\'s own rate.'],
+    ['Filters applied', document.getElementById('daily-snapshot-date').value + ' to ' + document.getElementById('snapshot-end-date').value + ' | ' + (document.getElementById('snapshot-carrier-select').value==='__all__'?'All Carriers':document.getElementById('snapshot-carrier-select').value) + ' | ' + (_snapshotSelectedDrivers===null?'All Drivers':_snapshotSelectedDrivers.join(', '))]
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Load Detail');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(defRows), 'What This Means');
+  const rangeLabel = document.getElementById('daily-snapshot-date').value + '_to_' + document.getElementById('snapshot-end-date').value;
+  XLSX.writeFile(wb, 'EA_Load_Snapshot_' + rangeLabel + '.xlsx');
+  showGlobalAlert('Exported ' + tickets.length + ' load(s) -- matches the numbers shown on screen.', 'ok');
 }
 
 function toggleAwaitMore() {
