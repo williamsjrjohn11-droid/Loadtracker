@@ -651,6 +651,20 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
       </div>
     </div>
 
+    <!-- Monthly Revenue by Truck & Driver -->
+    <div class="card">
+      <div class="card-title">📊 Monthly Revenue by Truck & Driver</div>
+      <div style="font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:12px;">
+        A full revenue workbook for a date range — a Dashboard summary (KPIs, by-month, by-truck, by-driver), a Month × Truck × Driver breakdown with subtotals, the underlying load-by-load detail, and a definitions tab explaining every number.
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+        <div class="invoice-field" style="margin-bottom:0;"><label>From</label><input type="date" id="truckrev-from"></div>
+        <div class="invoice-field" style="margin-bottom:0;"><label>To</label><input type="date" id="truckrev-to"></div>
+      </div>
+      <button class="btn btn-green btn-full" onclick="exportTruckDriverRevenueReport()">⬇ Export Excel (.xlsx)</button>
+      <div style="font-size:10px;color:var(--text3);margin-top:8px;line-height:1.5;">The Dashboard tab includes the same summary tables as a chart would be built from — select any table and Insert → Chart in Excel to add one; charts aren't generated automatically.</div>
+    </div>
+
     <!-- Broker Reconciliation -->
     <div class="card">
       <div class="card-title">🔍 Broker Reconciliation</div>
@@ -1650,7 +1664,7 @@ function switchTab(n) {
   if (n === 'settlements') renderSetts();
   if (n === 'drivers') renderDriverPay();
   if (n === 'weekly') renderWeekly();
-  if (n === 'reports') { populateReportYearFilter(); renderReportPreview(); renderEAReportPreview(); renderEAReportSummary(); renderInvoiceHistory(); renderFSCRateList(); initPercentageReportDates(); initCarrierReportDates(); initReconDates(); }
+  if (n === 'reports') { populateReportYearFilter(); renderReportPreview(); renderEAReportPreview(); renderEAReportSummary(); renderInvoiceHistory(); renderFSCRateList(); initPercentageReportDates(); initCarrierReportDates(); initReconDates(); initTruckRevDates(); }
 }
 
 // Default the Percentage Driver Report range to "this month" the first time Reports is opened —
@@ -3480,6 +3494,156 @@ function exportEASnapshotExcel() {
   const rangeLabel = document.getElementById('daily-snapshot-date').value + '_to_' + document.getElementById('snapshot-end-date').value;
   XLSX.writeFile(wb, 'EA_Load_Snapshot_' + rangeLabel + '.xlsx');
   showGlobalAlert('Exported ' + tickets.length + ' load(s) -- matches the numbers shown on screen.', 'ok');
+}
+
+function initTruckRevDates() {
+  const fromEl = document.getElementById('truckrev-from');
+  const toEl = document.getElementById('truckrev-to');
+  if (!fromEl || !toEl || fromEl.value || toEl.value) return;
+  // Defaults to the start of the current month through today, since this report is meant
+  // to be run monthly — a full prior month or the month-to-date, not any one narrow week.
+  const today = new Date();
+  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+  fromEl.value = monthStart.toISOString().slice(0,10);
+  toEl.value = today.toISOString().slice(0,10);
+}
+
+function monthLabelFor(dateStr) {
+  const d = parseLocalDate(dateStr);
+  if (!d) return 'Unknown';
+  return d.toLocaleDateString('en-US', {month:'long', year:'numeric'});
+}
+
+// A ticket's truck comes from whatever the scan itself recorded (t.truck, from the ticket's
+// own TRUCK NO. field) when present — that's the actual truck on that specific load — and
+// only falls back to the driver's on-file truck_number when the ticket didn't capture one.
+function truckForTicket(t, driverByName) {
+  if (t.truck) return t.truck;
+  const d = driverByName[t.driver];
+  return (d && d.truck_number) || '';
+}
+
+function buildTruckDriverRevenueReport(fromVal, toVal) {
+  const from = fromVal ? parseLocalDate(fromVal) : null;
+  const to = toVal ? parseLocalDate(toVal) : null;
+  if (to) to.setHours(23,59,59,999);
+  const driverByName = {}; (DB.drivers||[]).forEach(d => { driverByName[d.name] = d; });
+
+  const loads = (DB.tickets||[]).filter(t => {
+    if ((t.business||'axelar') !== 'ea') return false;
+    if (t.error) return false;
+    const dt = parseLocalDate(t.date);
+    if (!dt) return false;
+    if (from && dt < from) return false;
+    if (to && dt > to) return false;
+    return true;
+  }).map(t => {
+    const tons = parseFloat(t.tons||0);
+    const rate = parseFloat(t.rate_direct||0);
+    const base = tons * rate;
+    const carrier = detectCarrierAndOrigin(t).carrier;
+    const pct = getFSCPctForDate(t.date, carrier) || 0;
+    const fsc = base * (pct/100);
+    return { t, tons, base, fsc, total: base+fsc, carrier, pct, truck: truckForTicket(t, driverByName), month: monthLabelFor(t.date) };
+  }).sort((a,b) => (parseLocalDate(a.t.date)||0) - (parseLocalDate(b.t.date)||0));
+
+  // Month × Truck × Driver groups, in the order months first appear so the sheet reads
+  // chronologically rather than alphabetically.
+  const monthOrder = [];
+  const groups = {};
+  loads.forEach(l => {
+    if (!monthOrder.includes(l.month)) monthOrder.push(l.month);
+    const key = l.month + '|' + l.truck + '|' + l.t.driver;
+    if (!groups[key]) groups[key] = { month:l.month, truck:l.truck, driver:l.t.driver||'(no driver)', loads:0, tons:0, base:0, fsc:0, total:0 };
+    const g = groups[key];
+    g.loads++; g.tons += l.tons; g.base += l.base; g.fsc += l.fsc; g.total += l.total;
+  });
+
+  const byTruck = {};
+  const byDriver = {};
+  loads.forEach(l => {
+    const tk = l.truck || '(none)';
+    if (!byTruck[tk]) byTruck[tk] = { loads:0, base:0, fsc:0, total:0 };
+    byTruck[tk].loads++; byTruck[tk].base += l.base; byTruck[tk].fsc += l.fsc; byTruck[tk].total += l.total;
+    const dn = l.t.driver || '(no driver)';
+    if (!byDriver[dn]) byDriver[dn] = { loads:0, base:0, fsc:0, total:0 };
+    byDriver[dn].loads++; byDriver[dn].base += l.base; byDriver[dn].fsc += l.fsc; byDriver[dn].total += l.total;
+  });
+
+  const byMonth = {};
+  monthOrder.forEach(m => byMonth[m] = { loads:0, tons:0, base:0, fsc:0, total:0 });
+  loads.forEach(l => { const m = byMonth[l.month]; m.loads++; m.tons += l.tons; m.base += l.base; m.fsc += l.fsc; m.total += l.total; });
+
+  const grand = { loads: loads.length, tons: loads.reduce((a,l)=>a+l.tons,0), base: loads.reduce((a,l)=>a+l.base,0), fsc: loads.reduce((a,l)=>a+l.fsc,0), total: loads.reduce((a,l)=>a+l.total,0) };
+
+  return { loads, groups, monthOrder, byMonth, byTruck, byDriver, grand, driverByName };
+}
+
+function exportTruckDriverRevenueReport() {
+  const fromVal = document.getElementById('truckrev-from').value;
+  const toVal = document.getElementById('truckrev-to').value;
+  const data = buildTruckDriverRevenueReport(fromVal, toVal);
+  if (!data.loads.length) { showGlobalAlert('No EA loads found in that date range.', 'err'); return; }
+  const s = loadInvoiceSettings();
+  const fromLabel = fromVal ? cleanDate(fromVal) : '?';
+  const toLabel = toVal ? cleanDate(toVal) : '?';
+
+  // ---- Monthly Breakdown sheet: Month / Truck / Driver rows with a subtotal per month ----
+  const mb = [['Monthly Revenue by Truck and Driver'], ['Month','Truck','Driver','Loads','Tons','Base Revenue','FSC','Total Revenue']];
+  data.monthOrder.forEach(month => {
+    const rows = Object.values(data.groups).filter(g => g.month === month).sort((a,b) => b.total - a.total);
+    rows.forEach(g => mb.push([g.month, g.truck||'—', g.driver, g.loads, round2(g.tons), round2(g.base), round2(g.fsc), round2(g.total)]));
+    const mTot = data.byMonth[month];
+    mb.push([month+' Total', '', '', mTot.loads, round2(mTot.tons), round2(mTot.base), round2(mTot.fsc), round2(mTot.total)]);
+  });
+  mb.push(['Grand Total', '', '', data.grand.loads, round2(data.grand.tons), round2(data.grand.base), round2(data.grand.fsc), round2(data.grand.total)]);
+
+  // ---- Dashboard sheet: KPI row, by-month table, by-truck / by-driver tables side by side ----
+  const db = [];
+  db.push([`${s.fromName||'Earth Angels Express'} — Truck & Driver Revenue`]);
+  db.push([`Load activity from ${fromLabel} through ${toLabel}`]);
+  db.push([]);
+  db.push(['TOTAL REVENUE','','','BASE HAUL REVENUE','','','FUEL SURCHARGE','','','LOADS COMPLETED','','','TONS HAULED']);
+  db.push([round2(data.grand.total),'','',round2(data.grand.base),'','',round2(data.grand.fsc),'','',data.grand.loads,'','',round2(data.grand.tons)]);
+  db.push([]);
+  db.push(['Month','Loads','Tons','Base Revenue','FSC','Total Revenue']);
+  data.monthOrder.forEach(month => { const m = data.byMonth[month]; db.push([month, m.loads, round2(m.tons), round2(m.base), round2(m.fsc), round2(m.total)]); });
+  db.push(['Grand Total', data.grand.loads, round2(data.grand.tons), round2(data.grand.base), round2(data.grand.fsc), round2(data.grand.total)]);
+  db.push([]);
+  const truckNames = Object.keys(data.byTruck).sort((a,b) => data.byTruck[b].total - data.byTruck[a].total);
+  const driverNames = Object.keys(data.byDriver).sort((a,b) => data.byDriver[b].total - data.byDriver[a].total);
+  db.push(['Truck','Loads','Base Revenue','FSC','Total Revenue','','Driver','Loads','Base Revenue','FSC','Total Revenue']);
+  const maxRows = Math.max(truckNames.length, driverNames.length);
+  for (let i=0; i<maxRows; i++) {
+    const tk = truckNames[i], dn = driverNames[i];
+    const trow = tk ? [tk, data.byTruck[tk].loads, round2(data.byTruck[tk].base), round2(data.byTruck[tk].fsc), round2(data.byTruck[tk].total)] : ['','','','',''];
+    const drow = dn ? [dn, data.byDriver[dn].loads, round2(data.byDriver[dn].base), round2(data.byDriver[dn].fsc), round2(data.byDriver[dn].total)] : ['','','','',''];
+    db.push([...trow, '', ...drow]);
+  }
+
+  // ---- Load Detail sheet: every ticket behind the numbers above ----
+  const ld = [['Ticket #','Date','Driver','Truck #','Carrier','Pickup','Deliver','Tons','Rate ($/ton)','EA Made ($)','FSC %','FSC ($)']];
+  data.loads.forEach(l => ld.push([l.t.ticket||'', cleanDate(l.t.date), l.t.driver||'', l.truck||'', l.carrier, l.t.pickup||'', l.t.deliver||'', round2(l.tons), round2(parseFloat(l.t.rate_direct||0)), round2(l.base), l.pct, round2(l.fsc)]));
+  ld.push(['TOTAL','','','','','','',round2(data.grand.tons),'',round2(data.grand.base),'',round2(data.grand.fsc)]);
+
+  // ---- Definitions sheet ----
+  const def = [
+    ['Metric','What it includes'],
+    ['Loads Completed','Count of EA (direct-haul) tickets in the selected date range. Axelar sub-haul loads and scan-error tickets are never included.'],
+    ['Base Haul Revenue','Sum of tons x rate for every load -- what EA billed the carrier before FSC.'],
+    ['Fuel Surcharge (FSC)','Sum of each load\'s base revenue x that load\'s carrier\'s published FSC% for that load\'s date. A mixed-carrier range correctly blends each carrier\'s own rate.'],
+    ['Total Revenue','Base Haul Revenue + Fuel Surcharge for the same loads.'],
+    ['Truck','From the ticket\'s own scanned Truck # when the scan captured one; otherwise the driver\'s on-file truck number.'],
+    ['Filters applied', `${fromVal||'?'} to ${toVal||'?'} | All Carriers | All Drivers`]
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(mb), 'Monthly Breakdown');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(db), 'Dashboard');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(ld), 'Load Detail');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(def), 'Definitions');
+  XLSX.writeFile(wb, `Earth_Angels_Truck_Driver_Revenue_${fromVal||'all'}_to_${toVal||'today'}.xlsx`);
+  showGlobalAlert(`⬇ Exported ${data.loads.length} load(s) across ${data.monthOrder.length} month(s).`, 'ok');
 }
 
 function toggleAwaitMore() {
@@ -5536,12 +5700,24 @@ function openInvoiceGenerator() {
   document.getElementById('invoice-generate-btn').textContent = '✅ Generate Invoice';
   document.getElementById('inv-range-start').value = '';
   document.getElementById('inv-range-end').value = '';
+  populateInvoiceCustomerFilter('__all__');
   document.getElementById('invoice-list').innerHTML = '<div class="empty"><span class="empty-icon">📅</span>Pick a date range and tap "Find Loads in Range"</div>';
   document.getElementById('invoice-count-summary').textContent = '';
   document.getElementById('invoice-modal-total').textContent = '$0.00';
   document.getElementById('invoice-generate-btn').disabled = true;
   _invoicePreviewTickets = [];
   document.getElementById('invoice-preview-modal').classList.add('open');
+}
+
+// Known carriers plus anything seen via manual override — same source list used by the EA
+// Load Snapshot and Reconciliation tool's carrier dropdowns, so they all stay in sync as new
+// carriers get added.
+function populateInvoiceCustomerFilter(selectValue) {
+  const el = document.getElementById('inv-customer-filter');
+  if (!el) return;
+  const known = [...new Set(['Amrize', 'Preferred Materials', ...(DB.tickets||[]).map(t => t.carrier_override).filter(Boolean)])].sort();
+  el.innerHTML = '<option value="__all__">All Customers</option>' + known.map(c => `<option value="${c.replace(/"/g,'&quot;')}">${c}</option>`).join('');
+  el.value = known.includes(selectValue) ? selectValue : '__all__';
 }
 
 // Convert a cleanDate()-style string (M/D/YY) to yyyy-mm-dd for a <input type="date">
@@ -5565,6 +5741,7 @@ function editInvoice(id) {
   document.getElementById('invoice-generate-btn').textContent = '✅ Save Changes';
   document.getElementById('inv-range-start').value = toDateInputValue(inv.period_start);
   document.getElementById('inv-range-end').value = toDateInputValue(inv.period_end);
+  populateInvoiceCustomerFilter(inv.bill_to || '__all__');
   document.getElementById('invoice-preview-modal').classList.add('open');
   previewInvoiceRange();
 }
@@ -5582,11 +5759,14 @@ function previewInvoiceRange() {
   const start = new Date(startVal), end = new Date(endVal);
   end.setHours(23,59,59,999);
 
+  const customerFilter = document.getElementById('inv-customer-filter') ? document.getElementById('inv-customer-filter').value : '__all__';
+
   // In range OR already part of the invoice being edited (so removing a load that falls
   // outside the newly-picked range still shows it, with a chance to keep or drop it).
   const matches = DB.tickets.filter(t => {
     if ((t.business||'axelar') !== 'ea' || t.error) return false;
     if (_editingInvoiceId && t.ea_invoice_id === _editingInvoiceId) return true;
+    if (customerFilter !== '__all__' && detectCarrierAndOrigin(t).carrier !== customerFilter) return false;
     const d = new Date(t.date);
     if (isNaN(d)) return false;
     return d >= start && d <= end;
@@ -5611,6 +5791,7 @@ function previewInvoiceRange() {
     const billedElsewhere = t.ea_invoice_id && !onThisInvoice;
     const prevInv = billedElsewhere ? (DB.eaInvoices||[]).find(inv => inv.id === t.ea_invoice_id) : null;
     const amount = parseFloat(t.tons||0) * parseFloat(t.rate_direct||0);
+    const rowCustomer = detectCarrierAndOrigin(t).carrier;
     const savedFsc = _invoiceFSCPrefill[t.ticket];
     // Each ticket's own carrier determines which FSC% applies — same reasoning as everywhere
     // else FSC gets computed.
@@ -5622,7 +5803,7 @@ function previewInvoiceRange() {
       <input type="checkbox" id="inv-chk-${i}" ${billedElsewhere?'disabled':'checked'} onchange="updateInvoiceTotal()" style="width:16px;height:16px;accent-color:var(--green);flex-shrink:0;">
       <div style="flex:1;min-width:0;">
         <div style="font-weight:600;">${t.ticket||'—'} <span style="color:var(--text3);font-weight:400;">${cleanDate(t.date)||''}</span></div>
-        <div style="color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${t.customer_name||t.deliver||''}${billedElsewhere?` — already on ${prevInv?prevInv.invoice_number:'another invoice'}`:''}</div>
+        <div style="color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${rowCustomer} — ${t.customer_name||t.deliver||''}${billedElsewhere?` — already on ${prevInv?prevInv.invoice_number:'another invoice'}`:''}</div>
       </div>
       <div style="text-align:right;flex-shrink:0;">
         <div>${parseFloat(t.tons||0).toFixed(2)} t × $${parseFloat(t.rate_direct||0).toFixed(2)}</div>
@@ -5709,6 +5890,8 @@ async function confirmGenerateInvoice() {
   const amount = subtotal + fscTotal;
   const dates = included.map(t => cleanDate(t.date)).filter(Boolean);
   const s = loadInvoiceSettings();
+  const customerFilter = document.getElementById('inv-customer-filter') ? document.getElementById('inv-customer-filter').value : '__all__';
+  const billTo = customerFilter !== '__all__' ? customerFilter : (s.billToName || 'Amrize');
   const periodStart = dates.length ? dates.reduce((a,b) => new Date(a) < new Date(b) ? a : b) : '';
   const periodEnd = dates.length ? dates.reduce((a,b) => new Date(a) > new Date(b) ? a : b) : '';
 
@@ -5727,6 +5910,7 @@ async function confirmGenerateInvoice() {
     inv.total_amount = amount;
     inv.fsc_amt = fscTotal;
     inv.fsc_details = fscDetails;
+    inv.bill_to = billTo;
   } else {
     inv = {
       id: 'inv_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
@@ -5740,7 +5924,7 @@ async function confirmGenerateInvoice() {
       total_amount: amount,
       fsc_amt: fscTotal,
       fsc_details: fscDetails,
-      bill_to: s.billToName || 'Amrize',
+      bill_to: billTo,
       status: 'draft',
       notes: '',
       created_at: new Date().toISOString()
@@ -5753,6 +5937,70 @@ async function confirmGenerateInvoice() {
   await gasPost({action: 'saveEAInvoice', invoice: {...inv, fsc_details: JSON.stringify(inv.fsc_details||{})}});
   showGlobalAlert(`✅ Invoice ${inv.invoice_number} ${_editingInvoiceId?'updated':'generated'} — ${fmt$(amount)}`, 'ok');
   printEAInvoice(inv.id);
+}
+
+// Shared row-builder so the preview export (before saving) and the history export (after
+// saving) produce an identical layout — one always matches the other.
+function buildInvoiceExcelRows(rows, fscByTicket, billTo, periodLabel) {
+  const aoa = [['Ticket #','Date','Customer','Pickup','Deliver','Tons','Rate ($/ton)','Amount ($)','FSC %','FSC ($)','Line Total ($)']];
+  let tTons=0, tAmount=0, tFsc=0;
+  rows.forEach(t => {
+    const customer = detectCarrierAndOrigin(t).carrier;
+    const tons = parseFloat(t.tons||0);
+    const rate = parseFloat(t.rate_direct||0);
+    const amount = tons * rate;
+    const fscInfo = fscByTicket[t.ticket] || {};
+    const fscPct = fscInfo.pct !== undefined ? parseFloat(fscInfo.pct)||0 : 0;
+    const fscAmt = fscInfo.amt !== undefined ? parseFloat(fscInfo.amt)||0 : amount*(fscPct/100);
+    tTons += tons; tAmount += amount; tFsc += fscAmt;
+    aoa.push([t.ticket||'', cleanDate(t.date), customer, t.pickup||'', t.deliver||'', round2(tons), round2(rate), round2(amount), fscPct, round2(fscAmt), round2(amount+fscAmt)]);
+  });
+  aoa.push(['TOTAL','','','','',round2(tTons),'',round2(tAmount),'',round2(tFsc),round2(tAmount+tFsc)]);
+  aoa.push([]);
+  aoa.push(['Bill To', billTo]);
+  aoa.push(['Period', periodLabel]);
+  return aoa;
+}
+
+function exportInvoicePreviewExcel() {
+  if (!_invoicePreviewTickets.length) { showGlobalAlert('Find loads in a date range first.', 'err'); return; }
+  const included = _invoicePreviewTickets.filter((t, i) => {
+    const cb = document.getElementById('inv-chk-' + i);
+    return cb && cb.checked && !cb.disabled;
+  });
+  if (!included.length) { showGlobalAlert('No loads checked — nothing to export.', 'err'); return; }
+  const fscByTicket = {};
+  _invoicePreviewTickets.forEach((t, i) => {
+    const pctEl = document.getElementById('inv-fsc-pct-' + i);
+    if (!pctEl) return;
+    const pct = parseFloat(pctEl.value||0) || 0;
+    fscByTicket[t.ticket] = { pct, amt: parseFloat(t.tons||0)*parseFloat(t.rate_direct||0)*(pct/100) };
+  });
+  const customerFilter = document.getElementById('inv-customer-filter') ? document.getElementById('inv-customer-filter').value : '__all__';
+  const s = loadInvoiceSettings();
+  const billTo = customerFilter !== '__all__' ? customerFilter : (s.billToName || 'Amrize');
+  const dates = included.map(t => cleanDate(t.date)).filter(Boolean);
+  const periodLabel = dates.length ? `${dates.reduce((a,b)=>new Date(a)<new Date(b)?a:b)} to ${dates.reduce((a,b)=>new Date(a)>new Date(b)?a:b)}` : '';
+  const aoa = buildInvoiceExcelRows(included, fscByTicket, billTo, periodLabel);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'Invoice');
+  XLSX.writeFile(wb, `EA_Invoice_Draft_${billTo.replace(/[^a-z0-9]+/gi,'_')}_${periodLabel.replace(/[^a-z0-9]+/gi,'_')}.xlsx`);
+  showGlobalAlert(`⬇ Exported ${included.length} load(s).`, 'ok');
+}
+
+function exportInvoiceExcel(id) {
+  const inv = (DB.eaInvoices||[]).find(x => x.id === id);
+  if (!inv) return;
+  const rows = (inv.ticket_ids||[]).map(tn => DB.tickets.find(x => String(x.ticket||'')===String(tn))).filter(Boolean);
+  if (!rows.length) { showGlobalAlert('No load detail found for this invoice.', 'err'); return; }
+  let fscByTicket = {};
+  try { fscByTicket = typeof inv.fsc_details === 'string' ? JSON.parse(inv.fsc_details||'{}') : (inv.fsc_details||{}); } catch(e) { fscByTicket = {}; }
+  const periodLabel = `${inv.period_start||'?'} to ${inv.period_end||'?'}`;
+  const aoa = buildInvoiceExcelRows(rows, fscByTicket, inv.bill_to||'Amrize', periodLabel);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'Invoice');
+  XLSX.writeFile(wb, `${inv.invoice_number}_${(inv.bill_to||'Amrize').replace(/[^a-z0-9]+/gi,'_')}.xlsx`);
+  showGlobalAlert(`⬇ Exported ${inv.invoice_number}.`, 'ok');
 }
 
 function renderInvoiceHistory() {
@@ -5779,6 +6027,7 @@ function renderInvoiceHistory() {
           <div class="sett-net">${fmt$(inv.total_amount)}</div>
           <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px;flex-wrap:wrap;" onclick="event.stopPropagation()">
             <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="printEAInvoice('${inv.id}')">🖨️ Print</button>
+            <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="exportInvoiceExcel('${inv.id}')">⬇ Excel</button>
             <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="editInvoice('${inv.id}')">✏️ Edit</button>
             ${inv.status==='draft' ? `<button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="setInvoiceStatus('${inv.id}','sent')">📤 Mark Sent</button>` : ''}
             ${inv.status==='sent' ? `<button class="btn btn-sm btn-green" onclick="setInvoiceStatus('${inv.id}','paid')">✓ Mark Paid</button>` : ''}
@@ -6154,6 +6403,35 @@ function exportEALoadsReport() {
 // (and the same keyword matching) the rate auto-fill already relies on — so the carrier
 // grouping here always lines up with how rates get matched, and stays correct automatically
 // as new carriers/quarries get added to that same matching logic.
+// Fail-safe against the same physical location showing up as multiple report rows because
+// it got typed/OCR'd slightly differently each time — a duplicated zip glued onto the end
+// ("...McKinney, TX 75069 75454"), or a site name sometimes paired with its street address
+// and sometimes not ("Lake Bridgeport - Heidelberg Materials" vs "Lake Bridgeport - 1160 FM
+// 1658, Bridgeport, TX 76426" vs both together). Returns a stable grouping key; the report
+// still displays a real address, just the longest/most descriptive variant seen for that key.
+function normalizeAddressForGrouping(raw) {
+  let s = String(raw || '').toLowerCase();
+  s = s.replace(/^\s*(amrize|preferred materials|preferred)\s*:\s*/, '');
+  s = s.replace(/[.,]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!s) return 'unknown';
+  // A named site before a " - " separator (e.g. "Lake Bridgeport - ...") is the most reliable
+  // signal when present — the street address after it is what varies between scans.
+  const dashIdx = s.indexOf(' - ');
+  if (dashIdx > 0 && dashIdx < 40) {
+    const sitePart = s.slice(0, dashIdx).trim();
+    if (sitePart && !/^\d/.test(sitePart)) return 'site:' + sitePart;
+  }
+  // Otherwise key on the street-number + street-name signature, which is far more stable
+  // across scans than the full string (business name prefix, suite/plant labels, etc. vary).
+  const streetMatch = s.match(/\d{2,6}\s+[a-z][a-z0-9.]*(?:\s+[a-z0-9.]+){0,3}/);
+  if (streetMatch) return 'street:' + streetMatch[0].trim();
+  // Last resort: the cleaned string, cut off at the first 5-digit zip so a second address's
+  // zip glued onto the end doesn't turn one location into two rows.
+  const zipMatch = s.match(/\b\d{5}\b/);
+  if (zipMatch) s = s.slice(0, zipMatch.index + zipMatch[0].length);
+  return s.trim() || 'unknown';
+}
+
 function detectCarrierAndOrigin(t) {
   // Manual override always wins — this is the escape hatch for a ticket whose pickup text
   // doesn't contain a keyword the auto-detection recognizes (bad OCR, a new quarry we haven't
@@ -6198,6 +6476,7 @@ function buildCarrierPayrollReportData(fromVal, toVal) {
   const byCarrier = {};
   loads.forEach(t => {
     const { carrier, origin } = detectCarrierAndOrigin(t);
+    const originKey = normalizeAddressForGrouping(origin);
     const tons = parseFloat(t.tons||0);
     const gross = tons * parseFloat(t.rate_direct||0);
     const fscPct = getFSCPctForDate(t.date, carrier) || 0;
@@ -6207,12 +6486,15 @@ function buildCarrierPayrollReportData(fromVal, toVal) {
     byCarrier[carrier].tons += tons;
     byCarrier[carrier].gross += gross;
     byCarrier[carrier].fsc += fscAmt;
-    if (!byCarrier[carrier].origins[origin]) byCarrier[carrier].origins[origin] = { loads:0, tons:0, gross:0, fsc:0, tickets:[] };
-    byCarrier[carrier].origins[origin].loads++;
-    byCarrier[carrier].origins[origin].tons += tons;
-    byCarrier[carrier].origins[origin].gross += gross;
-    byCarrier[carrier].origins[origin].fsc += fscAmt;
-    byCarrier[carrier].origins[origin].tickets.push(t.ticket || '?');
+    if (!byCarrier[carrier].origins[originKey]) byCarrier[carrier].origins[originKey] = { label: origin, loads:0, tons:0, gross:0, fsc:0, tickets:[] };
+    // Keep the longest raw variant seen as the display label — it usually carries the most
+    // identifying detail (both a plant/business name AND the street address, not just one).
+    if (origin.length > byCarrier[carrier].origins[originKey].label.length) byCarrier[carrier].origins[originKey].label = origin;
+    byCarrier[carrier].origins[originKey].loads++;
+    byCarrier[carrier].origins[originKey].tons += tons;
+    byCarrier[carrier].origins[originKey].gross += gross;
+    byCarrier[carrier].origins[originKey].fsc += fscAmt;
+    byCarrier[carrier].origins[originKey].tickets.push(t.ticket || '?');
   });
 
   // ---- Payroll (per-driver) ----
@@ -6281,12 +6563,11 @@ function exportCarrierPayrollExcel() {
     // published rates, so this is FSC$ as a % of gross rather than a single looked-up rate.
     const cPct = c.gross ? round2(c.fsc / c.gross * 100) : 0;
     carrierRows.push([carrier, c.loads, round2(c.tons), round2(c.gross), cPct, round2(c.fsc), '']);
-    Object.keys(c.origins).sort().forEach(origin => {
-      const o = c.origins[origin];
+    Object.values(c.origins).sort((a,b) => a.label.localeCompare(b.label)).forEach(o => {
       const oPct = o.gross ? round2(o.fsc / o.gross * 100) : 0;
       // Only unmatched rows get their ticket #s listed — that's what needs fixing in All
       // Tickets; a matched Amrize/Preferred row doesn't need this since it's already correct.
-      carrierRows.push(['   ' + origin, o.loads, round2(o.tons), round2(o.gross), oPct, round2(o.fsc), isUnmatched ? o.tickets.join(', ') : '']);
+      carrierRows.push(['   ' + o.label, o.loads, round2(o.tons), round2(o.gross), oPct, round2(o.fsc), isUnmatched ? o.tickets.join(', ') : '']);
     });
   });
   carrierRows.push(['TOTAL', data.loads.length, round2(data.totalTons), round2(data.totalGross), data.totalGross ? round2(data.totalFsc/data.totalGross*100) : 0, round2(data.totalFsc), '']);
@@ -6323,13 +6604,12 @@ function printCarrierPayrollReport() {
     const c = data.byCarrier[carrier];
     const cPct = c.gross ? (c.fsc/c.gross*100) : 0;
     const isUnmatched = carrier === 'Other / Unmatched';
-    const originRows = Object.keys(c.origins).sort().map(origin => {
-      const o = c.origins[origin];
+    const originRows = Object.values(c.origins).sort((a,b) => a.label.localeCompare(b.label)).map(o => {
       const oPct = o.gross ? (o.fsc/o.gross*100) : 0;
       // Unmatched rows get their ticket #s listed right under the origin text — that's what
       // actually needs fixing, so the ticket number is what you'd go look up in All Tickets.
       const ticketLine = isUnmatched ? `<div style="font-size:10px;color:#999;margin-top:2px;">Tickets: ${o.tickets.join(', ')}</div>` : '';
-      return `<tr><td style="padding-left:24px;color:#666;">${origin}${ticketLine}</td><td>${o.loads}</td><td>${round2(o.tons)}</td><td>${fmt(o.gross)}</td><td>${oPct.toFixed(1)}%</td><td>${fmt(o.fsc)}</td></tr>`;
+      return `<tr><td style="padding-left:24px;color:#666;">${o.label}${ticketLine}</td><td>${o.loads}</td><td>${round2(o.tons)}</td><td>${fmt(o.gross)}</td><td>${oPct.toFixed(1)}%</td><td>${fmt(o.fsc)}</td></tr>`;
     }).join('');
     return `<tr style="font-weight:700;background:#f9fafb;"><td>${carrier}</td><td>${c.loads}</td><td>${round2(c.tons)}</td><td>${fmt(c.gross)}</td><td>${cPct.toFixed(1)}%</td><td>${fmt(c.fsc)}</td></tr>${originRows}`;
   }).join('');
@@ -7640,6 +7920,12 @@ if ('serviceWorker' in navigator) {
       <div class="invoice-field"><label>Start Date</label><input type="date" id="inv-range-start"></div>
       <div class="invoice-field"><label>End Date</label><input type="date" id="inv-range-end"></div>
     </div>
+    <div class="invoice-field" style="margin-bottom:8px;">
+      <label>Customer</label>
+      <select id="inv-customer-filter" onchange="previewInvoiceRange()" style="width:100%;padding:8px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:'Barlow',sans-serif;">
+        <option value="__all__">All Customers</option>
+      </select>
+    </div>
     <button class="btn btn-full" style="background:var(--surface2);border:1px solid var(--border2);margin-bottom:8px;" onclick="previewInvoiceRange()">🔍 Find Loads in Range</button>
     <div id="invoice-count-summary" style="font-size:12px;color:var(--text2);margin-bottom:6px;"></div>
     <div id="invoice-list"></div>
@@ -7647,6 +7933,7 @@ if ('serviceWorker' in navigator) {
       <div><div id="invoice-modal-total">$0.00</div><div style="font-size:11px;color:var(--text3);">total for checked loads</div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn" style="flex:1 1 0;min-width:0;white-space:normal;text-align:center;line-height:1.3;justify-content:center;" onclick="closeInvoicePreviewModal()">Cancel</button>
+        <button class="btn" style="flex:1 1 0;min-width:0;white-space:normal;text-align:center;line-height:1.3;justify-content:center;background:var(--surface2);border:1px solid var(--border2);" onclick="exportInvoicePreviewExcel()">⬇ Excel</button>
         <button class="btn btn-green" style="flex:1.3 1 0;min-width:0;white-space:normal;text-align:center;line-height:1.3;justify-content:center;" id="invoice-generate-btn" onclick="confirmGenerateInvoice()" disabled>✅ Generate Invoice</button>
       </div>
     </div>
