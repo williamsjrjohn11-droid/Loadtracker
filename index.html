@@ -7001,7 +7001,7 @@ function editTicketTons(ticketNum) {
 function editTicketDate(ticketNum) {
   const ticket = DB.tickets.find(t => String(t.ticket||'') === String(ticketNum));
   if (!ticket) return;
-  const newDate = prompt(`Edit date for ticket ${ticketNum} (e.g. 9/12/2026):`, ticket.date || '');
+  const newDate = prompt(`Edit date for ticket ${ticketNum} (e.g. 9/12/2026):`, cleanDate(ticket.date) !== '—' ? cleanDate(ticket.date) : '');
   if (newDate === null) return;
   if (newDate.trim() !== '' && isNaN(new Date(newDate.trim()))) { showGlobalAlert('⚠ Enter a valid date.', 'err'); return; }
   ticket.date = newDate.trim();
