@@ -647,6 +647,28 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
       </div>
     </div>
 
+    <!-- Broker Reconciliation -->
+    <div class="card">
+      <div class="card-title">🔍 Broker Reconciliation</div>
+      <div style="font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:12px;">
+        Paste a broker's ticket list (copied straight from their spreadsheet — Excel formatting is fine) and this checks it against your tracker for the same date range, so a missing or extra load turns up in seconds instead of a manual line-by-line compare.
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+        <div class="invoice-field" style="margin-bottom:0;"><label>From</label><input type="date" id="recon-from"></div>
+        <div class="invoice-field" style="margin-bottom:0;"><label>To</label><input type="date" id="recon-to"></div>
+      </div>
+      <div class="invoice-field" style="margin-bottom:10px;">
+        <label>Carrier</label>
+        <select id="recon-carrier" style="width:100%;padding:8px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:'Barlow',sans-serif;"></select>
+      </div>
+      <div class="invoice-field" style="margin-bottom:10px;">
+        <label>Paste broker's ticket list here</label>
+        <textarea id="recon-paste" rows="6" placeholder="Paste ticket numbers here — one per line, or a full copied spreadsheet range. Only the ticket number column matters, everything else is ignored." style="font-family:'Courier New',monospace;font-size:12px;"></textarea>
+      </div>
+      <button class="btn btn-green btn-full" onclick="runReconciliation()">🔍 Compare to Tracker</button>
+      <div id="recon-results" style="margin-top:14px;"></div>
+    </div>
+
     <!-- EA Invoice to Amrize -->
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
@@ -1624,7 +1646,7 @@ function switchTab(n) {
   if (n === 'settlements') renderSetts();
   if (n === 'drivers') renderDriverPay();
   if (n === 'weekly') renderWeekly();
-  if (n === 'reports') { populateReportYearFilter(); renderReportPreview(); renderEAReportPreview(); renderEAReportSummary(); renderInvoiceHistory(); renderFSCRateList(); initPercentageReportDates(); initCarrierReportDates(); }
+  if (n === 'reports') { populateReportYearFilter(); renderReportPreview(); renderEAReportPreview(); renderEAReportSummary(); renderInvoiceHistory(); renderFSCRateList(); initPercentageReportDates(); initCarrierReportDates(); initReconDates(); }
 }
 
 // Default the Percentage Driver Report range to "this month" the first time Reports is opened —
@@ -1649,6 +1671,106 @@ function initCarrierReportDates() {
   fromEl.value = range.start;
   toEl.value = range.end;
 }
+
+// Defaults the Reconciliation tool's date range the same way as the Carrier & Payroll
+// Report, and populates the Carrier dropdown from the same known-carrier list used
+// elsewhere (Amrize, Preferred Materials, plus any manual carrier_override values seen).
+function initReconDates() {
+  const fromEl = document.getElementById('recon-from');
+  const toEl = document.getElementById('recon-to');
+  if (fromEl && toEl && !fromEl.value && !toEl.value) {
+    const range = defaultLastWeekRange();
+    fromEl.value = range.start;
+    toEl.value = range.end;
+  }
+  const carrierEl = document.getElementById('recon-carrier');
+  if (carrierEl && !carrierEl.options.length) {
+    const known = [...new Set(['Amrize', 'Preferred Materials', ...(DB.tickets||[]).map(t => t.carrier_override).filter(Boolean)])].sort();
+    carrierEl.innerHTML = '<option value="">All Carriers</option>' + known.map(c => `<option value="${c}">${c}</option>`).join('');
+  }
+}
+
+// Pulls ticket numbers out of pasted text. Handles a straight one-per-line paste, or a
+// full spreadsheet range copied out of Excel/Sheets (which arrives tab-separated) — takes
+// the first cell of each row rather than grabbing every digit sequence on the line, so
+// dates like 9/8/2026 elsewhere in the row don't get mistaken for ticket numbers.
+function parseReconTicketList(raw) {
+  const out = [];
+  const lines = String(raw || '').split(/\r?\n/);
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const cells = line.includes('\t') ? line.split('\t') : line.split(/\s{2,}|,/);
+    const first = String(cells[0] || '').trim();
+    // A ticket number is a bare run of digits (Amrize/Preferred tickets are all-numeric,
+    // just varying length — e.g. 43540 or 1975326147). Skip anything that isn't.
+    const cleaned = first.replace(/[^\d]/g, '');
+    if (cleaned.length >= 3 && cleaned === first.replace(/\s/g, '')) out.push(cleaned);
+  }
+  return [...new Set(out)];
+}
+
+function runReconciliation() {
+  const fromVal = document.getElementById('recon-from').value;
+  const toVal = document.getElementById('recon-to').value;
+  const carrier = document.getElementById('recon-carrier').value;
+  const pasted = parseReconTicketList(document.getElementById('recon-paste').value);
+  const resultsEl = document.getElementById('recon-results');
+
+  if (!pasted.length) { resultsEl.innerHTML = '<div class="alert alert-err">No ticket numbers found in the pasted text — check the paste and try again.</div>'; return; }
+
+  const from = fromVal ? parseLocalDate(fromVal) : null;
+  const to = toVal ? parseLocalDate(toVal) : null;
+  if (to) to.setHours(23,59,59,999);
+
+  // Tracker-side tickets for this date range + carrier, keyed by normalized ticket number.
+  const trackerTickets = (DB.tickets||[]).filter(t => {
+    if (t.error) return false;
+    const dt = parseLocalDate(t.date);
+    if (!dt) return false;
+    if (from && dt < from) return false;
+    if (to && dt > to) return false;
+    if (carrier) {
+      const info = detectCarrierAndOrigin(t);
+      if (info.carrier !== carrier) return false;
+    }
+    return true;
+  });
+  const trackerMap = new Map();
+  trackerTickets.forEach(t => trackerMap.set(String(t.ticket||'').replace(/\s/g,''), t));
+
+  const pastedSet = new Set(pasted);
+  const onlyInTracker = trackerTickets.filter(t => !pastedSet.has(String(t.ticket||'').replace(/\s/g,'')));
+  const onlyInPasted = pasted.filter(p => !trackerMap.has(p));
+  const matchedCount = trackerTickets.length - onlyInTracker.length;
+
+  const rangeLabel = `${fromVal||'?'} to ${toVal||'?'}${carrier ? ' · ' + carrier : ''}`;
+
+  let html = `<div style="font-size:13px;color:var(--text);margin-bottom:10px;">
+    <strong>${matchedCount}</strong> matched &nbsp;·&nbsp; <span style="color:${onlyInTracker.length?'var(--red)':'var(--text2)'};"><strong>${onlyInTracker.length}</strong> only in tracker</span> &nbsp;·&nbsp; <span style="color:${onlyInPasted.length?'var(--amber)':'var(--text2)'};"><strong>${onlyInPasted.length}</strong> only on broker's list</span>
+    <div style="font-size:11px;color:var(--text3);margin-top:2px;">${rangeLabel}</div>
+  </div>`;
+
+  if (!onlyInTracker.length && !onlyInPasted.length) {
+    html += `<div class="empty"><span class="empty-icon">✅</span>Every ticket matches — nothing to fix.</div>`;
+  }
+
+  if (onlyInTracker.length) {
+    html += `<div style="font-weight:600;font-size:12px;color:var(--red);margin:10px 0 6px;">⚠ In tracker but not on broker's list — check for a duplicate or misread ticket #</div>`;
+    html += `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr><th style="text-align:left;padding:4px;">Ticket #</th><th style="text-align:left;padding:4px;">Date</th><th style="text-align:left;padding:4px;">Driver</th><th style="text-align:right;padding:4px;">Tons</th></tr></thead><tbody>`;
+    onlyInTracker.forEach(t => {
+      html += `<tr style="border-top:1px solid var(--border2);"><td class="mono" style="padding:4px;">${t.ticket||'—'}</td><td style="padding:4px;">${cleanDate(t.date)||'—'}</td><td style="padding:4px;">${t.driver||'—'}</td><td style="text-align:right;padding:4px;">${parseFloat(t.tons||0).toFixed(2)}</td></tr>`;
+    });
+    html += `</tbody></table></div>`;
+  }
+
+  if (onlyInPasted.length) {
+    html += `<div style="font-weight:600;font-size:12px;color:var(--amber);margin:14px 0 6px;">⚠ On broker's list but missing from tracker — possible unscanned ticket</div>`;
+    html += `<div style="display:flex;flex-wrap:wrap;gap:6px;">${onlyInPasted.map(p => `<span class="badge badge-amber mono">${p}</span>`).join('')}</div>`;
+  }
+
+  resultsEl.innerHTML = html;
+}
+
 
 // DRAG DROP
 function onDrag(e, id) { e.preventDefault(); document.getElementById(id).classList.add('drag-over'); }
@@ -3376,6 +3498,7 @@ function renderTicketRow(x) {
   const photoBtn = x.photo_url ? `<a href="#" onclick="viewPhoto('${x.photo_url}');return false;" style="font-size:12px;text-decoration:none;margin-left:3px;" title="View photo">📷</a>` : '';
   const editBtn = `<button onclick="editTicket('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text3);margin-left:3px;padding:0;" title="Edit ticket number">✏️</button>`;
   const tonsBtn = `<button onclick="editTicketTons('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text3);margin-left:3px;padding:0;" title="Edit tons">⚖️</button>`;
+  const dateBtn = `<button onclick="editTicketDate('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text3);margin-left:3px;padding:0;" title="Edit date">📅</button>`;
   const delBtn = `<button onclick="deleteTicket('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text3);margin-left:3px;padding:0;" title="Delete ticket">🗑️</button>`;
   const isEA = (x.business||'axelar')==='ea';
   const bizBtn = `<button onclick="toggleTicketBusiness('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text3);margin-left:5px;padding:0;white-space:nowrap;" title="Currently tagged ${isEA?'EA':'Axelar'} — tap to move to ${isEA?'Axelar':'EA'}">🔀 ${isEA?'EA':'Axelar'}</button>`;
@@ -3383,7 +3506,7 @@ function renderTicketRow(x) {
   const carrierInfo = isEA ? detectCarrierAndOrigin(x) : null;
   const carrierUnmatched = isEA && !x.carrier_override && carrierInfo.carrier === 'Other / Unmatched';
   const carrierBtn = isEA ? `<button onclick="editTicketCarrier('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:11px;color:${x.carrier_override?'var(--text2)':(carrierUnmatched?'var(--amber)':'var(--text3)')};margin-left:5px;padding:0;white-space:nowrap;" title="${x.carrier_override?'Carrier override: '+x.carrier_override+' — tap to change or clear':'Auto-detected: '+carrierInfo.carrier+' — tap to override'}">🏷️ ${x.carrier_override || carrierInfo.carrier}</button>` : '';
-  return `<tr><td class="mono" style="white-space:nowrap;"><span>${x.ticket||'—'}</span>${photoBtn}${editBtn}${tonsBtn}${delBtn}${bizBtn}${driverBtn}${carrierBtn}</td><td style="white-space:nowrap;font-size:12px;">${cleanDate(x.date)||'—'}</td><td style="font-size:12px;">${x.pickup||'—'}</td><td style="font-size:12px;">${x.deliver||'—'}</td>${tc}<td>${x.settled_tons ? parseFloat(x.settled_tons).toFixed(2) : '—'}</td><td>${x.settled_rate ? '$'+parseFloat(x.settled_rate).toFixed(2) : '—'}</td><td>${x.settled_total ? fmt$(x.settled_total) : '—'}</td><td>${x.settled_fsc ? fmt$(x.settled_fsc) : '—'}</td><td>${badge}</td></tr>`;
+  return `<tr><td class="mono" style="white-space:nowrap;"><span>${x.ticket||'—'}</span>${photoBtn}${editBtn}${tonsBtn}${delBtn}${bizBtn}${driverBtn}${carrierBtn}</td><td style="white-space:nowrap;font-size:12px;">${cleanDate(x.date)||'—'}${dateBtn}</td><td style="font-size:12px;">${x.pickup||'—'}</td><td style="font-size:12px;">${x.deliver||'—'}</td>${tc}<td>${x.settled_tons ? parseFloat(x.settled_tons).toFixed(2) : '—'}</td><td>${x.settled_rate ? '$'+parseFloat(x.settled_rate).toFixed(2) : '—'}</td><td>${x.settled_total ? fmt$(x.settled_total) : '—'}</td><td>${x.settled_fsc ? fmt$(x.settled_fsc) : '—'}</td><td>${badge}</td></tr>`;
 }
 
 function parseSettDate(s) {
@@ -6873,6 +6996,18 @@ function editTicketTons(ticketNum) {
   save(); renderAll();
   pushToCloud({id:'skip'}, [ticket]);
   showGlobalAlert(`✅ Tons updated to ${ticket.tons} for ticket ${ticketNum}${ticket.has_discrepancy ? ' — now flagged as a mismatch' : ''}`, ticket.has_discrepancy ? 'err' : 'ok');
+}
+
+function editTicketDate(ticketNum) {
+  const ticket = DB.tickets.find(t => String(t.ticket||'') === String(ticketNum));
+  if (!ticket) return;
+  const newDate = prompt(`Edit date for ticket ${ticketNum} (e.g. 9/12/2026):`, ticket.date || '');
+  if (newDate === null) return;
+  if (newDate.trim() !== '' && isNaN(new Date(newDate.trim()))) { showGlobalAlert('⚠ Enter a valid date.', 'err'); return; }
+  ticket.date = newDate.trim();
+  save(); renderAll();
+  pushToCloud({id:'skip'}, [ticket]);
+  showGlobalAlert(`✅ Date updated to ${cleanDate(ticket.date)} for ticket ${ticketNum}.`, 'ok');
 }
 
 function toggleTicketBusiness(ticketNum) {
