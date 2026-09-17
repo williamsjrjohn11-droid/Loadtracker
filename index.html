@@ -3897,8 +3897,8 @@ function renderDriverPay() {
       // the button is always available and simply loads still tag to them for records.
       const btnEnabled = salaryMode ? true : !!unpaid.length;
       const metaLine = salaryMode
-        ? `${rateLabel}${unpaid.length ? ` &nbsp;·&nbsp; ${unpaid.length} load(s) hauled this period (for records only)` : ''}${d.truck_number?` &nbsp;·&nbsp; 🚛 ${d.truck_number}`:''}`
-        : `${rateLabel} &nbsp;·&nbsp; ${unpaid.length} unpaid load(s)${matchBits.length?` (${matchBits.join(', ')})`:''} &nbsp;·&nbsp; ${tons.toFixed(2)} tons${d.truck_number?` &nbsp;·&nbsp; 🚛 ${d.truck_number}`:''}`;
+        ? `${rateLabel}${unpaid.length ? ` &nbsp;·&nbsp; ${unpaid.length} load(s) hauled this period (for records only)` : ''}${d.truck_number?` &nbsp;·&nbsp; 🚛 ${d.truck_number}`:''}${d.hire_date?` &nbsp;·&nbsp; 📅 Hired ${cleanDate(d.hire_date)}`:''}`
+        : `${rateLabel} &nbsp;·&nbsp; ${unpaid.length} unpaid load(s)${matchBits.length?` (${matchBits.join(', ')})`:''} &nbsp;·&nbsp; ${tons.toFixed(2)} tons${d.truck_number?` &nbsp;·&nbsp; 🚛 ${d.truck_number}`:''}${d.hire_date?` &nbsp;·&nbsp; 📅 Hired ${cleanDate(d.hire_date)}`:''}`;
       const safeId = 'dt_' + d.name.replace(/[^a-zA-Z0-9]/g, '_');
       const ticketRowsHtml = unpaid.length ? `<div class="table-wrap"><table>
           <thead><tr><th>Ticket #</th><th>Date</th><th>Route</th><th>Tons</th><th>Rate</th><th>Amount</th><th>Photo</th></tr></thead>
@@ -4169,6 +4169,7 @@ function openDriverForm(existingName) {
   document.getElementById('driver-form-salary').value = d && d.weekly_salary ? d.weekly_salary : '';
   toggleDriverPayModeFields();
   document.getElementById('driver-form-truck').value = d ? (d.truck_number||'') : '';
+  document.getElementById('driver-form-hire-date').value = d ? (d.hire_date||'') : '';
   document.getElementById('driver-form-alt-truck-id').value = d ? (d.alt_truck_id||'') : '';
   document.getElementById('driver-form-notes').value = d ? (d.notes||'') : '';
   document.getElementById('driver-form-active').checked = d ? !!d.active : true;
@@ -4277,6 +4278,7 @@ async function saveDriverForm() {
   const feePct = parseFloat(document.getElementById('driver-form-fee-pct').value) || 0;
   const salary = parseFloat(document.getElementById('driver-form-salary').value) || 0;
   const truck = document.getElementById('driver-form-truck').value.trim().toUpperCase();
+  const hireDate = document.getElementById('driver-form-hire-date').value || '';
   const altTruckId = document.getElementById('driver-form-alt-truck-id').value.trim();
   const notes = document.getElementById('driver-form-notes').value.trim();
   const active = document.getElementById('driver-form-active').checked;
@@ -4310,7 +4312,7 @@ async function saveDriverForm() {
     pay_pct: (payMode === 'percentage' || payMode === 'percentage_fsc') ? pct : 0,
     broker_fee_pct: (payMode === 'amrize' || payMode === 'flat' || payMode === 'percentage_fsc') ? feePct : 0,
     weekly_salary: payMode === 'salary' ? salary : 0,
-    truck_number: truck, alt_truck_id: altTruckId, notes,
+    truck_number: truck, hire_date: hireDate, alt_truck_id: altTruckId, notes,
     photo_url: photoUrl,
     termination_date: wasTerminated ? (existingDriverRec.termination_date||'') : '',
     termination_reason: wasTerminated ? (existingDriverRec.termination_reason||'') : ''
@@ -7881,6 +7883,10 @@ if ('serviceWorker' in navigator) {
     <div class="driver-field">
       <label>Truck Number — auto-matches this driver when scanning</label>
       <input type="text" id="driver-form-truck" placeholder="e.g. AG04" style="text-transform:uppercase;">
+    </div>
+    <div class="driver-field">
+      <label>Hire Date (optional)</label>
+      <input type="date" id="driver-form-hire-date">
     </div>
     <div class="driver-field">
       <label>Alt Truck ID (optional — for other carriers)</label>
