@@ -6225,7 +6225,7 @@ function renderDriverSettlementDoc(ds, isPreview) {
   // the full per-load value before any broker fee, since this is a production reference figure,
   // not a pay calculation. It has no bearing on what's actually owed to the driver.
   const grossFromLoads = subtotal + fscAmt;
-  const amountOwed = salaryMode ? parseFloat(ds.total_amount||0) : (afterFee + fscAmt + bonusAmt);
+  const amountOwed = salaryMode ? parseFloat(ds.total_amount||0) : (afterFee + fscAmt + bonusAmt - miscAmt);
   const docLabel = isPreview ? 'PREVIEW' : (ds.settlement_number || ds.id);
   const ytd = computeDriverYTD(ds);
 
