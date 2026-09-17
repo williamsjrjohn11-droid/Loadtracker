@@ -3962,7 +3962,7 @@ function renderDriverPay() {
       const salaryMode = ds.pay_type === 'salary';
       const hasHistoricalLoads = salaryMode && (ds.ticket_ids||[]).length > 0;
       const metaLine = salaryMode
-        ? `Weekly salary${ds.bonus_amount ? ' + bonus' : ''}${hasHistoricalLoads ? ` &nbsp;·&nbsp; ${ds.ticket_count||(ds.ticket_ids||[]).length} load(s) on record (${parseFloat(ds.total_tons||0).toFixed(2)} tons — not used for pay)` : ''}`
+        ? `Weekly salary${ds.bonus_amount ? ' + bonus' : ''}${ds.misc_deduction_amount ? ' - deduction' : ''}${hasHistoricalLoads ? ` &nbsp;·&nbsp; ${ds.ticket_count||(ds.ticket_ids||[]).length} load(s) on record (${parseFloat(ds.total_tons||0).toFixed(2)} tons — not used for pay)` : ''}`
         : `${ds.ticket_count||(ds.ticket_ids||[]).length} loads &nbsp;·&nbsp; ${parseFloat(ds.total_tons||0).toFixed(2)} tons &nbsp;·&nbsp; avg $${parseFloat(ds.rate_per_ton||0).toFixed(2)}/ton`;
       const ticketTableHtml = (ds.ticket_ids||[]).length ? `<div class="table-wrap"><table>
           <thead><tr><th>Ticket #</th><th>Date</th><th>Route</th><th>Tons</th><th>Rate</th><th>Amount</th><th>Photo</th></tr></thead>
@@ -3976,7 +3976,7 @@ function renderDriverPay() {
           }).join('')}</tbody>
         </table></div>` : '';
       const bodyHtml = salaryMode
-        ? `<div style="padding:10px 12px;font-size:12px;color:var(--text2);">💵 Weekly Salary — ${fmt$(parseFloat(ds.total_amount||0) - parseFloat(ds.bonus_amount||0))}${ds.bonus_amount ? `<br>➕ Bonus${ds.bonus_note?` (${ds.bonus_note})`:''} — ${fmt$(ds.bonus_amount)}` : ''}${hasHistoricalLoads ? `<br><br><span style="color:var(--text3);">📋 Loads on record for this period (for reference only — not what pay is based on):</span>` : ''}</div>${hasHistoricalLoads ? ticketTableHtml : ''}`
+        ? `<div style="padding:10px 12px;font-size:12px;color:var(--text2);">💵 Weekly Salary — ${fmt$(parseFloat(ds.total_amount||0) - parseFloat(ds.bonus_amount||0) + parseFloat(ds.misc_deduction_amount||0))}${ds.bonus_amount ? `<br>➕ Bonus${ds.bonus_note?` (${ds.bonus_note})`:''} — ${fmt$(ds.bonus_amount)}` : ''}${ds.misc_deduction_amount ? `<br>➖ Other/Deduction${ds.misc_deduction_note?` (${ds.misc_deduction_note})`:''} — -${fmt$(ds.misc_deduction_amount)}` : ''}${hasHistoricalLoads ? `<br><br><span style="color:var(--text3);">📋 Loads on record for this period (for reference only — not what pay is based on):</span>` : ''}</div>${hasHistoricalLoads ? ticketTableHtml : ''}`
         : ticketTableHtml;
       return `<div class="sett-card">
         <div class="sett-header" style="cursor:pointer;" onclick="toggleDriverSett('${ds.id}')">
@@ -4542,6 +4542,10 @@ function generateDriverPayout(driverName) {
   document.getElementById('payout-bonus-amt').value = 0;
   document.getElementById('payout-bonus-note').value = '';
   document.getElementById('payout-bonus-fields').style.display = 'none';
+  document.getElementById('payout-misc-toggle').checked = false;
+  document.getElementById('payout-misc-amt').value = 0;
+  document.getElementById('payout-misc-note').value = '';
+  document.getElementById('payout-misc-fields').style.display = 'none';
   updateFeeFieldForDriver(d);
   renderPayoutList();
   document.getElementById('payout-modal').classList.add('open');
@@ -4601,6 +4605,11 @@ function editDriverPayout(id) {
   document.getElementById('payout-bonus-amt').value = ds.bonus_amount || 0;
   document.getElementById('payout-bonus-note').value = ds.bonus_note || '';
   document.getElementById('payout-bonus-fields').style.display = hasBonus ? 'grid' : 'none';
+  const hasMisc = !!(ds.misc_deduction_amount && parseFloat(ds.misc_deduction_amount) !== 0);
+  document.getElementById('payout-misc-toggle').checked = hasMisc;
+  document.getElementById('payout-misc-amt').value = ds.misc_deduction_amount || 0;
+  document.getElementById('payout-misc-note').value = ds.misc_deduction_note || '';
+  document.getElementById('payout-misc-fields').style.display = hasMisc ? 'grid' : 'none';
   updateFeeFieldForDriver(d);
   renderPayoutList();
   document.getElementById('payout-modal').classList.add('open');
@@ -4716,6 +4725,10 @@ function generateSalaryPayout(driverName) {
   document.getElementById('salary-bonus-amt').value = 0;
   document.getElementById('salary-bonus-note').value = '';
   document.getElementById('salary-bonus-fields').style.display = 'none';
+  document.getElementById('salary-misc-toggle').checked = false;
+  document.getElementById('salary-misc-amt').value = 0;
+  document.getElementById('salary-misc-note').value = '';
+  document.getElementById('salary-misc-fields').style.display = 'none';
   updateSalaryTotal();
   document.getElementById('salary-modal').classList.add('open');
 }
@@ -4732,7 +4745,7 @@ function editSalaryPayout(id) {
   document.getElementById('salary-generate-btn').textContent = '✅ Save Changes';
   document.getElementById('salary-period-start').value = ds.period_start || '';
   document.getElementById('salary-period-end').value = ds.period_end || '';
-  const baseSalary = parseFloat(ds.total_amount||0) - parseFloat(ds.bonus_amount||0);
+  const baseSalary = parseFloat(ds.total_amount||0) - parseFloat(ds.bonus_amount||0) + parseFloat(ds.misc_deduction_amount||0);
   document.getElementById('salary-amount').value = baseSalary.toFixed(2);
   document.getElementById('salary-settlement-date').value = ds.settlement_date || new Date().toISOString().slice(0,10);
   const hasBonus = !!(ds.bonus_amount && parseFloat(ds.bonus_amount) !== 0);
@@ -4740,6 +4753,11 @@ function editSalaryPayout(id) {
   document.getElementById('salary-bonus-amt').value = ds.bonus_amount || 0;
   document.getElementById('salary-bonus-note').value = ds.bonus_note || '';
   document.getElementById('salary-bonus-fields').style.display = hasBonus ? 'grid' : 'none';
+  const hasMisc = !!(ds.misc_deduction_amount && parseFloat(ds.misc_deduction_amount) !== 0);
+  document.getElementById('salary-misc-toggle').checked = hasMisc;
+  document.getElementById('salary-misc-amt').value = ds.misc_deduction_amount || 0;
+  document.getElementById('salary-misc-note').value = ds.misc_deduction_note || '';
+  document.getElementById('salary-misc-fields').style.display = hasMisc ? 'grid' : 'none';
   updateSalaryTotal();
   document.getElementById('salary-modal').classList.add('open');
 }
@@ -4767,6 +4785,10 @@ function convertSettlementToSalary(id) {
   document.getElementById('salary-bonus-amt').value = 0;
   document.getElementById('salary-bonus-note').value = '';
   document.getElementById('salary-bonus-fields').style.display = 'none';
+  document.getElementById('salary-misc-toggle').checked = false;
+  document.getElementById('salary-misc-amt').value = 0;
+  document.getElementById('salary-misc-note').value = '';
+  document.getElementById('salary-misc-fields').style.display = 'none';
   updateSalaryTotal();
   document.getElementById('salary-modal').classList.add('open');
 }
@@ -4883,6 +4905,10 @@ function confirmMergeSelection() {
   document.getElementById('salary-bonus-amt').value = 0;
   document.getElementById('salary-bonus-note').value = '';
   document.getElementById('salary-bonus-fields').style.display = 'none';
+  document.getElementById('salary-misc-toggle').checked = false;
+  document.getElementById('salary-misc-amt').value = 0;
+  document.getElementById('salary-misc-note').value = '';
+  document.getElementById('salary-misc-fields').style.display = 'none';
   updateSalaryTotal();
   document.getElementById('salary-modal').classList.add('open');
   showGlobalAlert(`Merged ${1+merging.length} settlements — ${combinedTicketIds.length} load(s) total. Set the final salary amount and save.`, 'ok');
@@ -4895,12 +4921,21 @@ function toggleSalaryBonusFields() {
   updateSalaryTotal();
 }
 
+function toggleSalaryMiscFields() {
+  const on = document.getElementById('salary-misc-toggle').checked;
+  document.getElementById('salary-misc-fields').style.display = on ? 'grid' : 'none';
+  if (!on) { document.getElementById('salary-misc-amt').value = 0; document.getElementById('salary-misc-note').value = ''; }
+  updateSalaryTotal();
+}
+
 function previewSalaryPayout() {
   const periodStart = document.getElementById('salary-period-start').value;
   const periodEnd = document.getElementById('salary-period-end').value;
   const amount = parseFloat(document.getElementById('salary-amount').value) || 0;
   const bonusAmt = parseFloat(document.getElementById('salary-bonus-amt').value) || 0;
   const bonusNote = document.getElementById('salary-bonus-note').value || '';
+  const miscAmt = parseFloat(document.getElementById('salary-misc-amt').value) || 0;
+  const miscNote = document.getElementById('salary-misc-note').value || '';
   const settlementDate = document.getElementById('salary-settlement-date').value || '';
   if (!periodStart || !periodEnd) { showGlobalAlert('⚠ Enter a period start and end date.', 'err'); return; }
   if (!amount) { showGlobalAlert('⚠ Enter a salary amount.', 'err'); return; }
@@ -4936,13 +4971,15 @@ function previewSalaryPayout() {
     ticket_count: ticketIds.length,
     total_tons: totalTons,
     rate_per_ton: existingDs ? (existingDs.rate_per_ton||0) : 0,
-    total_amount: amount + bonusAmt,
+    total_amount: amount + bonusAmt - miscAmt,
     fsc_amt: fscAmt,
     fsc_details: fscDetailsObj,
     broker_fee_pct: existingDs ? (existingDs.broker_fee_pct||0) : 0,
     broker_fee_amt: existingDs ? (existingDs.broker_fee_amt||0) : 0,
     bonus_amount: bonusAmt,
     bonus_note: bonusNote,
+    misc_deduction_amount: miscAmt,
+    misc_deduction_note: miscNote,
     status: 'unpaid',
     settlement_date: settlementDate,
     created_at: new Date().toISOString(),
@@ -4954,7 +4991,8 @@ function previewSalaryPayout() {
 function updateSalaryTotal() {
   const amount = parseFloat(document.getElementById('salary-amount').value) || 0;
   const bonus = parseFloat(document.getElementById('salary-bonus-amt').value) || 0;
-  document.getElementById('salary-modal-total').textContent = fmt$(amount + bonus);
+  const misc = parseFloat(document.getElementById('salary-misc-amt').value) || 0;
+  document.getElementById('salary-modal-total').textContent = fmt$(amount + bonus - misc);
 }
 
 function closeSalaryModal() {
@@ -4990,10 +5028,12 @@ async function confirmSalaryPayout() {
   const amount = parseFloat(document.getElementById('salary-amount').value) || 0;
   const bonusAmt = parseFloat(document.getElementById('salary-bonus-amt').value) || 0;
   const bonusNote = document.getElementById('salary-bonus-note').value || '';
+  const miscAmt = parseFloat(document.getElementById('salary-misc-amt').value) || 0;
+  const miscNote = document.getElementById('salary-misc-note').value || '';
   const settlementDate = document.getElementById('salary-settlement-date').value || '';
   if (!periodStart || !periodEnd) { showGlobalAlert('⚠ Enter a period start and end date.', 'err'); return; }
   if (!amount) { showGlobalAlert('⚠ Enter a salary amount.', 'err'); return; }
-  const total = amount + bonusAmt;
+  const total = amount + bonusAmt - miscAmt;
 
   let ds;
   let ticketsToLink = [];   // tickets that need driver_settlement_id set to this ds
@@ -5006,6 +5046,8 @@ async function confirmSalaryPayout() {
     ds.total_amount = total;
     ds.bonus_amount = bonusAmt;
     ds.bonus_note = bonusNote;
+    ds.misc_deduction_amount = miscAmt;
+    ds.misc_deduction_note = miscNote;
     ds.settlement_date = settlementDate;
     // Converting an old per-load settlement: flip its pay_type now that the amount is
     // confirmed. ticket_ids/total_tons/rate_per_ton are deliberately left untouched — they
@@ -5048,6 +5090,8 @@ async function confirmSalaryPayout() {
       broker_fee_amt: 0,
       bonus_amount: bonusAmt,
       bonus_note: bonusNote,
+      misc_deduction_amount: miscAmt,
+      misc_deduction_note: miscNote,
       status: 'unpaid',
       paid_date: '',
       settlement_date: settlementDate,
@@ -5097,6 +5141,17 @@ function toggleBonusFields() {
   updatePayoutTotal();
 }
 
+function toggleMiscFields() {
+  const on = document.getElementById('payout-misc-toggle').checked;
+  const fields = document.getElementById('payout-misc-fields');
+  fields.style.display = on ? 'grid' : 'none';
+  if (!on) {
+    document.getElementById('payout-misc-amt').value = 0;
+    document.getElementById('payout-misc-note').value = '';
+  }
+  updatePayoutTotal();
+}
+
 function updatePayoutTotal() {
   const d = (DB.drivers||[]).find(x => x.name === _payoutPreviewDriver);
   let total = 0, checkedCount = 0, fscTotal = 0;
@@ -5117,7 +5172,10 @@ function updatePayoutTotal() {
   const feeDisplayEl = document.getElementById('payout-fee-dollar-display');
   if (feeDisplayEl) feeDisplayEl.textContent = fmt$(feeDollar) + ' taken out';
   const bonusAmt = parseFloat(document.getElementById('payout-bonus-amt')?.value || 0) || 0;
-  document.getElementById('payout-modal-total').textContent = fmt$(total - feeDollar + fscTotal + bonusAmt);
+  // Misc/deduction is always entered as a positive number and subtracted here — so a driver
+  // owing back an insurance advance, for example, never requires typing a negative bonus.
+  const miscAmt = parseFloat(document.getElementById('payout-misc-amt')?.value || 0) || 0;
+  document.getElementById('payout-modal-total').textContent = fmt$(total - feeDollar + fscTotal + bonusAmt - miscAmt);
   const fscDisplayEl = document.getElementById('payout-fsc-total-display');
   if (fscDisplayEl) fscDisplayEl.textContent = fmt$(fscTotal);
   const summaryEl = document.getElementById('payout-count-summary');
@@ -5194,6 +5252,8 @@ function previewDriverSettlementDoc() {
   const feeDollar = subtotal * (feePct/100);
   const bonusAmt = parseFloat(document.getElementById('payout-bonus-amt')?.value || 0) || 0;
   const bonusNote = document.getElementById('payout-bonus-note')?.value || '';
+  const miscAmt = parseFloat(document.getElementById('payout-misc-amt')?.value || 0) || 0;
+  const miscNote = document.getElementById('payout-misc-note')?.value || '';
   const dates = included.map(t => cleanDate(t.date)).filter(Boolean);
   const draftDs = {
     id: _editingDriverSettlementId || 'preview',
@@ -5203,13 +5263,15 @@ function previewDriverSettlementDoc() {
     period_end: dates.length ? dates.reduce((a,b) => new Date(a) > new Date(b) ? a : b) : '',
     ticket_ids: included.map(t => t.ticket),
     total_tons: tons,
-    total_amount: subtotal - feeDollar + fscTotal + bonusAmt,
+    total_amount: subtotal - feeDollar + fscTotal + bonusAmt - miscAmt,
     fsc_amt: fscTotal,
     fsc_details: fscDetails,
     broker_fee_pct: feePct,
     broker_fee_amt: feeDollar,
     bonus_amount: bonusAmt,
     bonus_note: bonusNote,
+    misc_deduction_amount: miscAmt,
+    misc_deduction_note: miscNote,
     status: 'unpaid',
     created_at: new Date().toISOString()
   };
@@ -5232,7 +5294,9 @@ async function confirmDriverPayout() {
   const feeDollar = subtotal * (feePct/100);
   const bonusAmt = parseFloat(document.getElementById('payout-bonus-amt')?.value || 0) || 0;
   const bonusNote = document.getElementById('payout-bonus-note')?.value || '';
-  const amount = subtotal - feeDollar + fscTotal + bonusAmt;
+  const miscAmt = parseFloat(document.getElementById('payout-misc-amt')?.value || 0) || 0;
+  const miscNote = document.getElementById('payout-misc-note')?.value || '';
+  const amount = subtotal - feeDollar + fscTotal + bonusAmt - miscAmt;
   const blendedRate = tons > 0 ? subtotal / tons : 0;
   const dates = included.map(t => cleanDate(t.date)).filter(Boolean);
   const periodStart = dates.length ? dates.reduce((a,b) => new Date(a) < new Date(b) ? a : b) : '';
@@ -5256,6 +5320,8 @@ async function confirmDriverPayout() {
     ds.broker_fee_amt = feeDollar;
     ds.bonus_amount = bonusAmt;
     ds.bonus_note = bonusNote;
+    ds.misc_deduction_amount = miscAmt;
+    ds.misc_deduction_note = miscNote;
   } else {
     ds = {
       id: 'ds_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
@@ -5274,6 +5340,8 @@ async function confirmDriverPayout() {
       broker_fee_amt: feeDollar,
       bonus_amount: bonusAmt,
       bonus_note: bonusNote,
+      misc_deduction_amount: miscAmt,
+      misc_deduction_note: miscNote,
       status: 'unpaid',
       paid_date: '',
       created_at: new Date().toISOString()
@@ -6148,9 +6216,11 @@ function renderDriverSettlementDoc(ds, isPreview) {
   // the fee never touches the fuel surcharge.
   const afterFee = subtotal - feeAmt;
   const bonusAmt = parseFloat(ds.bonus_amount||0);
-  // For a salary settlement, total_amount already IS the base weekly salary + bonus (there's
-  // no per-load subtotal to derive it from), so back out the base salary for display.
-  const salaryBase = salaryMode ? (parseFloat(ds.total_amount||0) - bonusAmt) : 0;
+  const miscAmt = parseFloat(ds.misc_deduction_amount||0);
+  // For a salary settlement, total_amount already IS the base weekly salary + bonus - misc
+  // deduction (there's no per-load subtotal to derive it from), so back out the base salary
+  // for display.
+  const salaryBase = salaryMode ? (parseFloat(ds.total_amount||0) - bonusAmt + miscAmt) : 0;
   // "Gross" for a converted salary settlement is what the loads themselves would have billed —
   // the full per-load value before any broker fee, since this is a production reference figure,
   // not a pay calculation. It has no bearing on what's actually owed to the driver.
@@ -6255,6 +6325,7 @@ ${rows.map((t,i) => {
   ${hasHistoricalLoads ? `<div class="math-row"><span>Gross (from loads)</span><span>${fmt(grossFromLoads)}</span></div>` : ''}
   <div class="math-row${hasHistoricalLoads ? ' total' : ''}"><span>Driver Pay (Net) — Weekly Salary</span><span>${fmt(salaryBase)}</span></div>
   ${bonusAmt ? `<div class="math-row"><span>Bonus${ds.bonus_note?` (${ds.bonus_note})`:''}</span><span>+${fmt(bonusAmt)}</span></div>` : ''}
+  ${miscAmt ? `<div class="math-row" style="color:#b91c1c;"><span>Other / Deduction${ds.misc_deduction_note?` (${ds.misc_deduction_note})`:''}</span><span>-${fmt(miscAmt)}</span></div>` : ''}
   <div class="math-row final"><span>AMOUNT OWED</span><span>${fmt(amountOwed)}</span></div>
   <div class="math-row" style="border-top:1px solid #e5e7eb;margin-top:6px;padding-top:8px;"><span>${new Date().getFullYear()} YTD (${ds.driver})</span><span>${fmt(ytd)}</span></div>
   ` : `
@@ -6264,6 +6335,7 @@ ${rows.map((t,i) => {
   <div class="math-row total"><span>Net (before FSC)</span><span>${fmt(afterFee)}</span></div>
   <div class="math-row"><span>FSC (full, no fee taken)</span><span>+${fmt(fscAmt)}</span></div>`}
   ${bonusAmt ? `<div class="math-row"><span>Bonus${ds.bonus_note?` (${ds.bonus_note})`:''}</span><span>+${fmt(bonusAmt)}</span></div>` : ''}
+  ${miscAmt ? `<div class="math-row" style="color:#b91c1c;"><span>Other / Deduction${ds.misc_deduction_note?` (${ds.misc_deduction_note})`:''}</span><span>-${fmt(miscAmt)}</span></div>` : ''}
   <div class="math-row final"><span>AMOUNT OWED</span><span>${fmt(amountOwed)}</span></div>
   <div class="math-row" style="border-top:1px solid #e5e7eb;margin-top:6px;padding-top:8px;"><span>${new Date().getFullYear()} YTD (${ds.driver})</span><span>${fmt(ytd)}</span></div>
   `}
@@ -7606,6 +7678,20 @@ if ('serviceWorker' in navigator) {
         <input type="text" id="payout-bonus-note" placeholder="e.g. Safety bonus, holiday bonus...">
       </div>
     </div>
+    <div style="display:flex;align-items:center;gap:8px;margin:10px 0 0;">
+      <input type="checkbox" id="payout-misc-toggle" onchange="toggleMiscFields()" style="width:16px;height:16px;accent-color:var(--red);">
+      <label for="payout-misc-toggle" style="font-size:13px;font-weight:600;cursor:pointer;">Other / deduction</label>
+    </div>
+    <div id="payout-misc-fields" style="display:none;grid-template-columns:1fr 2fr;gap:10px;margin:8px 0 10px;">
+      <div class="invoice-field" style="margin-bottom:0;">
+        <label>Amount $ (enter as a positive number — it's subtracted)</label>
+        <input type="number" step="0.01" min="0" id="payout-misc-amt" value="0" placeholder="0.00" oninput="updatePayoutTotal()">
+      </div>
+      <div class="invoice-field" style="margin-bottom:0;">
+        <label>Reason (shows on settlement)</label>
+        <input type="text" id="payout-misc-note" placeholder="e.g. Insurance repayment, advance repayment...">
+      </div>
+    </div>
     <div style="display:flex;flex-direction:column;gap:10px;">
       <div><div id="payout-modal-total">$0.00</div><div style="font-size:11px;color:var(--text3);">total for checked loads</div></div>
       <div id="payout-modal-actions">
@@ -7649,6 +7735,20 @@ if ('serviceWorker' in navigator) {
       <div class="invoice-field" style="margin-bottom:0;">
         <label>Bonus note (shows on settlement)</label>
         <input type="text" id="salary-bonus-note" placeholder="e.g. Holiday bonus...">
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin:10px 0 0;">
+      <input type="checkbox" id="salary-misc-toggle" onchange="toggleSalaryMiscFields()" style="width:16px;height:16px;accent-color:var(--red);">
+      <label for="salary-misc-toggle" style="font-size:13px;font-weight:600;cursor:pointer;">Other / deduction</label>
+    </div>
+    <div id="salary-misc-fields" style="display:none;grid-template-columns:1fr 2fr;gap:10px;margin:8px 0 10px;">
+      <div class="invoice-field" style="margin-bottom:0;">
+        <label>Amount $ (enter as a positive number — it's subtracted)</label>
+        <input type="number" step="0.01" min="0" id="salary-misc-amt" value="0" placeholder="0.00" oninput="updateSalaryTotal()">
+      </div>
+      <div class="invoice-field" style="margin-bottom:0;">
+        <label>Reason (shows on settlement)</label>
+        <input type="text" id="salary-misc-note" placeholder="e.g. Insurance repayment, advance repayment...">
       </div>
     </div>
     <div style="display:flex;flex-direction:column;gap:10px;">
