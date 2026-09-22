@@ -2696,6 +2696,8 @@ async function processTickets() {
           let prefOriginKey = '';
           if (hint.includes('grayson')) prefOriginKey = 'preferred: grayson';
           else if (hint.includes('stringtown')) prefOriginKey = 'preferred: stringtown';
+          else if (hint.includes('holcim')) prefOriginKey = 'preferred: holcim';
+          else if (hint.includes('united sand') || hint.includes('united s&g') || hint.includes('ivanhoe')) prefOriginKey = 'preferred: united sand & gravel';
           if (prefOriginKey && deliverHint) {
             const prefMatch = DB.rates.find(r =>
               r.active &&
@@ -6557,6 +6559,8 @@ function detectCarrierAndOrigin(t) {
   if (hint.includes('melissa')) return { carrier: 'Amrize', origin: 'Amrize: Melissa Rail' };
   if (hint.includes('grayson')) return { carrier: 'Preferred Materials', origin: 'Preferred: Grayson' };
   if (hint.includes('stringtown')) return { carrier: 'Preferred Materials', origin: 'Preferred: Stringtown' };
+  if (hint.includes('holcim')) return { carrier: 'Preferred Materials', origin: 'Preferred: Holcim' };
+  if (hint.includes('united sand') || hint.includes('united s&g') || hint.includes('ivanhoe')) return { carrier: 'Preferred Materials', origin: 'Preferred: United Sand & Gravel' };
   // Anything unrecognized still gets counted — labeled by whatever the ticket shows so nothing
   // silently vanishes from the report, it just won't have a clean carrier name yet.
   return { carrier: 'Other / Unmatched', origin: t.origin_hint || t.pickup || 'Unknown origin' };
