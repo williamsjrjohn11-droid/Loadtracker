@@ -513,12 +513,12 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
     <!-- DRAG DROP SETTLEMENT -->
     <div class="card">
       <div class="card-title">📄 Upload Settlement PDF (incoming, from a broker)</div>
-      <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">This is for a document someone else sent <em>you</em> — Axelar's settlement, or Amrize's settlement once they start sending one. To create the invoice <em>you</em> send to Amrize, use Reports → EA Invoice instead.</div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">This is for a document someone else sent <em>you</em> — Axelar's settlement, or a direct-haul carrier's settlement (Amrize, Preferred Materials, etc.). To create the invoice <em>you</em> send to Amrize, use Reports → EA Invoice instead.</div>
       <div style="margin-bottom:10px;">
         <div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:4px;">This document is</div>
         <select id="sett-business-select" style="width:100%;padding:8px;font-size:13px;background:var(--surface);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:'Barlow',sans-serif;">
           <option value="axelar">Axelar Settlement (sub-haul, broker fee applies)</option>
-          <option value="ea">Amrize Settlement (EA direct-haul, reconciles your EA tickets, no broker fee)</option>
+          <option value="ea">Amrize / Preferred Materials / EA Direct-Haul Settlement (reconciles your EA tickets, no broker fee)</option>
         </select>
       </div>
       <div class="drop-zone" id="sett-drop" ondragover="onDrag(event,'sett-drop')" ondragleave="offDrag('sett-drop')" ondrop="onDrop(event,'settlement')">
@@ -6244,7 +6244,11 @@ function renderDriverSettlementDoc(ds, isPreview) {
   // the full per-load value before any broker fee, since this is a production reference figure,
   // not a pay calculation. It has no bearing on what's actually owed to the driver.
   const grossFromLoads = subtotal + fscAmt;
-  const amountOwed = salaryMode ? parseFloat(ds.total_amount||0) : (afterFee + fscAmt + bonusAmt - miscAmt);
+  // Always trust the stored total_amount rather than re-deriving it from subtotal/fee/FSC/bonus/misc —
+  // total_amount is computed once, correctly, at Generate Payout time and saved as-is. Recomputing it
+  // here made the printed total silently drop any deduction whose amount/note didn't survive a reload
+  // (e.g. an older saved settlement from before those fields were added to the backend schema).
+  const amountOwed = parseFloat(ds.total_amount||0);
   const docLabel = isPreview ? 'PREVIEW' : (ds.settlement_number || ds.id);
   const ytd = computeDriverYTD(ds);
 
@@ -7323,7 +7327,7 @@ function renderEarningsPreview(businessFilter, elId, yearSelId) {
   if (!el) return;
   const allSettlements = DB.settlements.filter(s => (s.business||'axelar') === businessFilter);
   const emptyMsg = businessFilter === 'ea'
-    ? '<div class="empty"><span class="empty-icon">📑</span>No Amrize settlement uploaded yet — this fills in once you upload one (Upload tab → Settlement PDF → "Amrize Settlement")</div>'
+    ? '<div class="empty"><span class="empty-icon">📑</span>No EA direct-haul settlement uploaded yet — this fills in once you upload one (Upload tab → Settlement PDF → "Amrize / Preferred Materials / EA Direct-Haul Settlement")</div>'
     : '<div class="empty"><span class="empty-icon">📑</span>No data yet — upload settlements to see a preview</div>';
   if (!allSettlements.length) { el.innerHTML = emptyMsg; return; }
 
