@@ -6305,7 +6305,16 @@ function renderDriverSettlementDoc(ds, isPreview) {
   .math-row.total{font-weight:700;}
   .math-row.final{background:#111;color:#f5a623;font-weight:800;font-size:14px;border-radius:4px;margin-top:4px;}
   .footer{margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:10px;color:#999;display:flex;justify-content:space-between;}
-  @media print{.no-print{display:none;}}
+  @media print{
+    .no-print{display:none;}
+    /* The on-screen horizontal scroll on .tbl-wrap doesn't carry over to print/PDF — a printed
+       page can't be scrolled, so anything past the visible width was getting silently clipped
+       (this is what was cutting the FSC column off on printed/downloaded settlements). Letting
+       it wrap instead of scroll, plus tightening the table down, keeps every column on the page. */
+    .tbl-wrap{overflow:visible;}
+    table{font-size:9.5px;table-layout:fixed;width:100%;}
+    th,td{padding:4px 3px;word-break:break-word;}
+  }
   @media(max-width:480px){
     body{padding:14px;font-size:12px;}
     .header{flex-direction:column;gap:10px;}
@@ -6349,9 +6358,9 @@ ${isPreview ? '<div class="preview-banner">⚠ PREVIEW ONLY — this settlement 
 
 ${(salaryMode && !hasHistoricalLoads) ? '' : `
 ${hasHistoricalLoads ? '<div style="font-size:11px;color:#888;margin-bottom:4px;">Loads completed this period — shown for reference; pay is a flat weekly salary, not based on these figures.</div>' : ''}
-<div style="overflow-x:auto;">
+<div class="tbl-wrap" style="overflow-x:auto;">
 <table>
-<thead><tr><th>#</th><th>Date</th><th>Ticket #</th><th>Truck #</th><th>Company</th><th>Pickup</th><th>Deliver</th><th>Tons</th>${isPercentageDriver(d) ? '' : '<th>Rate</th>'}<th>Total</th>${isPercentageDriver(d) ? '' : '<th>FSC</th>'}</tr></thead>
+<thead><tr><th>#</th><th>Date</th><th>Ticket #</th><th>Company</th><th>Route</th><th>Tons</th>${isPercentageDriver(d) ? '' : '<th>Rate</th>'}<th>Total</th>${isPercentageDriver(d) ? '' : '<th>FSC</th>'}</tr></thead>
 <tbody>
 ${rows.map((t,i) => {
   const rate = driverPayRate(t, d);
@@ -6361,7 +6370,12 @@ ${rows.map((t,i) => {
   // Abbreviated so it doesn't crowd the row — full names are still visible on the Carrier &
   // Payroll Report and in the Rates tab if the shorthand ever needs disambiguating.
   const carrierLabel = detectCarrierAndOrigin(t).carrier.replace('Preferred Materials', 'Preferred').replace('Other / Unmatched', 'Unmatched');
-  return `<tr><td>${i+1}</td><td>${cleanDate(t.date)||'—'}</td><td>${t.ticket||'—'}</td><td>${t.truck||'—'}</td><td>${carrierLabel}</td><td>${t.pickup||'—'}</td><td>${t.deliver||'—'}</td><td>${parseFloat(t.tons||0).toFixed(2)}</td>${isPercentageDriver(d) ? '' : `<td>${rateCell}</td>`}<td>${fmt(parseFloat(t.tons||0)*rate)}</td>${isPercentageDriver(d) ? '' : `<td>${fscCell}</td>`}</tr>`;
+  // Pickup/deliver combined into one Route column, and the per-row Truck # dropped — every
+  // load on a driver's settlement is that same driver's truck, already shown once up top
+  // ("Truck EA19702"), so repeating it per row just ate width that FSC needed. This is what
+  // was pushing FSC off the right edge and getting it silently clipped on a printed/PDF'd
+  // settlement (the on-screen scroll that made it reachable there doesn't carry over to print).
+  return `<tr><td>${i+1}</td><td>${cleanDate(t.date)||'—'}</td><td>${t.ticket||'—'}</td><td>${carrierLabel}</td><td>${t.pickup||'—'} → ${t.deliver||'—'}</td><td>${parseFloat(t.tons||0).toFixed(2)}</td>${isPercentageDriver(d) ? '' : `<td>${rateCell}</td>`}<td>${fmt(parseFloat(t.tons||0)*rate)}</td>${isPercentageDriver(d) ? '' : `<td>${fscCell}</td>`}</tr>`;
 }).join('')}
 </tbody>
 </table>
@@ -6448,7 +6462,12 @@ function printEAInvoice(id) {
   tr:last-child td{border-bottom:none;}
   .total-row td{font-weight:800;border-top:2px solid #111;font-size:14px;}
   .footer{margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:10px;color:#999;display:flex;justify-content:space-between;}
-  @media print{.no-print{display:none;}}
+  @media print{
+    .no-print{display:none;}
+    .tbl-wrap{overflow:visible;}
+    table{font-size:9.5px;table-layout:fixed;width:100%;}
+    th,td{padding:4px 3px;word-break:break-word;}
+  }
   @media(max-width:480px){
     body{padding:14px;font-size:12px;}
     .header{flex-direction:column;gap:10px;}
@@ -6490,7 +6509,7 @@ function printEAInvoice(id) {
   </div>
 </div>
 
-<div style="overflow-x:auto;">
+<div class="tbl-wrap" style="overflow-x:auto;">
 <table>
 <thead><tr><th>#</th><th>Ticket #</th><th>Date</th><th>Customer</th><th>Product</th><th>Tons</th><th>Rate</th><th>Subtotal</th><th>FSC</th><th>Total</th></tr></thead>
 <tbody>
@@ -6781,7 +6800,12 @@ function printCarrierPayrollReport() {
   tr:last-child td{border-bottom:none;}
   .total-row td{font-weight:800;background:#111;color:#f5a623;font-size:13px;}
   .footer{margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:10px;color:#999;display:flex;justify-content:space-between;}
-  @media print{.no-print{display:none;}}
+  @media print{
+    .no-print{display:none;}
+    .tbl-wrap{overflow:visible;}
+    table{font-size:9.5px;table-layout:fixed;width:100%;}
+    th,td{padding:4px 3px;word-break:break-word;}
+  }
   @media(max-width:480px){
     body{padding:14px;font-size:12px;}
     .header{flex-direction:column;gap:10px;}
@@ -6805,7 +6829,7 @@ function printCarrierPayrollReport() {
 </div>
 
 <div class="section-title">What Each Carrier Paid</div>
-<div style="overflow-x:auto;">
+<div class="tbl-wrap" style="overflow-x:auto;">
 <table>
 <thead><tr><th>Carrier / Origin</th><th>Loads</th><th>Tons</th><th>Gross ($)</th><th>FSC %</th><th>FSC ($)</th></tr></thead>
 <tbody>
@@ -6816,7 +6840,7 @@ ${carrierRowsHtml}
 </div>
 
 <div class="section-title">Payroll Summary</div>
-<div style="overflow-x:auto;">
+<div class="tbl-wrap" style="overflow-x:auto;">
 <table>
 <thead><tr><th>Driver</th><th>Pay Method</th><th>Loads</th><th>Gross Value of Loads</th><th>Take-Home Pay</th><th>FSC %</th><th>FSC ($)</th><th>Total (incl. FSC)</th></tr></thead>
 <tbody>
@@ -7268,7 +7292,12 @@ function exportEarningsReport(businessFilter) {
   .badge-green{background:#dcfce7;color:#16a34a;}.badge-amber{background:#fef9c3;color:#b45309;}.badge-red{background:#fee2e2;color:#dc2626;}
   .alert-box{background:#fef9c3;border:1px solid #fbbf24;border-radius:7px;padding:10px 14px;font-size:12px;color:#b45309;margin-top:14px;}
   .footer{margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:10px;color:#999;display:flex;justify-content:space-between;}
-  @media print{.no-print{display:none;}}
+  @media print{
+    .no-print{display:none;}
+    .tbl-wrap{overflow:visible;}
+    table{font-size:9.5px;table-layout:fixed;width:100%;}
+    th,td{padding:4px 3px;word-break:break-word;}
+  }
   @media(max-width:480px){
     body{padding:14px;font-size:12px;}
     .header{flex-direction:column;gap:10px;}
@@ -7311,7 +7340,7 @@ ${months.length>0?`<div class="section-title">Monthly Breakdown</div>
 ${months.map(m=>`<div class="bar-row"><span class="bar-label">${m}</span><div class="bar-track"><div class="bar-fill" style="width:${(bm[m].net/maxNet*100).toFixed(1)}%"></div></div><span class="bar-val">${fmt(bm[m].net)}</span></div>`).join('')}`:''}
 
 <div class="section-title">Settlement Detail</div>
-<div style="overflow-x:auto;">
+<div class="tbl-wrap" style="overflow-x:auto;">
 <table>
 <thead><tr><th>Company</th><th>Check Date</th><th>Loads</th><th>Gross</th><th>FSC</th><th>Broker Fee</th><th>Net Payout</th></tr></thead>
 <tbody>
