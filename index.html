@@ -6384,7 +6384,8 @@ ${rows.map((t,i) => {
 <div class="math-box">
   <div class="math-row checkdate"><span>${ds.status==='paid'?'PAID DATE':'SETTLEMENT DATE'}</span><span>${settlementDateLabel}</span></div>
   ${salaryMode ? `
-  ${hasHistoricalLoads ? `<div class="math-row"><span>Gross (from loads)</span><span>${fmt(grossFromLoads)}</span></div>` : ''}
+  ${hasHistoricalLoads ? `<div class="math-row"><span>Gross (from loads)</span><span>${fmt(grossFromLoads)}</span></div>
+  <div class="math-row"><span>Total FSC (reference only — not added to salary)</span><span>${fmt(fscAmt)}</span></div>` : ''}
   <div class="math-row${hasHistoricalLoads ? ' total' : ''}"><span>Driver Pay (Net) — Weekly Salary</span><span>${fmt(salaryBase)}</span></div>
   ${bonusAmt ? `<div class="math-row"><span>Bonus${ds.bonus_note?` (${ds.bonus_note})`:''}</span><span>+${fmt(bonusAmt)}</span></div>` : ''}
   ${miscAmt ? `<div class="math-row" style="color:#b91c1c;"><span>Other / Deduction${ds.misc_deduction_note?` (${ds.misc_deduction_note})`:''}</span><span>-${fmt(miscAmt)}</span></div>` : ''}
