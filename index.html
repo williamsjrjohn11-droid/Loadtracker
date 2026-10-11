@@ -722,6 +722,20 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
       <div id="fsc-rate-list" style="margin-top:10px;display:none;"><div class="empty"><span class="empty-icon">⛽</span>No FSC rates set yet</div></div>
     </div>
 
+    <!-- Resolve Aggregates jobs — per-job rate, calculated from mileage × $0.21/ton-mile -->
+    <div class="card">
+      <div class="card-title">🪨 Resolve Aggregates Jobs</div>
+      <div style="font-size:12px;color:var(--text2);line-height:1.6;margin:10px 0 12px;">
+        Resolve pays $0.21 per loaded ton-mile, so each job gets its own flat $/ton rate based on that job's mileage. Add a job here once — enter the P.O./job reference and the mileage, the rate calculates itself — and every scanned ticket for that job's P.O. picks up the rate automatically from then on.
+      </div>
+      <button class="btn btn-green" style="width:100%;" onclick="openResolveJobForm()">➕ Add Resolve Job</button>
+      <div class="card-title" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;margin:14px 0 0;font-size:12px;" onclick="toggleMetricsSection('resolve-job-list','resolve-job-list-arrow','block')">
+        <span id="resolve-job-list-summary">No jobs added yet</span>
+        <span id="resolve-job-list-arrow" style="font-size:12px;color:var(--text3);transition:transform .15s;transform:rotate(-90deg);flex-shrink:0;">▼</span>
+      </div>
+      <div id="resolve-job-list" style="margin-top:10px;display:none;"><div class="empty"><span class="empty-icon">🪨</span>No Resolve jobs set up yet</div></div>
+    </div>
+
     <!-- Live Report Preview — Axelar -->
     <div class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;cursor:pointer;" onclick="toggleMetricsSection('axelar-report-preview-wrap','axelar-report-arrow','block')">
@@ -1669,7 +1683,7 @@ function switchTab(n) {
   if (n === 'settlements') renderSetts();
   if (n === 'drivers') renderDriverPay();
   if (n === 'weekly') renderWeekly();
-  if (n === 'reports') { populateReportYearFilter(); renderReportPreview(); renderEAReportPreview(); renderEAReportSummary(); renderInvoiceHistory(); renderFSCRateList(); initPercentageReportDates(); initCarrierReportDates(); initReconDates(); initTruckRevDates(); }
+  if (n === 'reports') { populateReportYearFilter(); renderReportPreview(); renderEAReportPreview(); renderEAReportSummary(); renderInvoiceHistory(); renderFSCRateList(); renderResolveJobList(); initPercentageReportDates(); initCarrierReportDates(); initReconDates(); initTruckRevDates(); }
 }
 
 // Default the Percentage Driver Report range to "this month" the first time Reports is opened —
@@ -2600,7 +2614,7 @@ async function processTickets() {
         mt = 'image/jpeg';
       }
       const block = mt.includes('pdf') ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } } : { type: 'image', source: { type: 'base64', media_type: mt, data: b64 } };
-      const text = await callClaude([{ role: 'user', content: [block, { type: 'text', text: 'Extract load ticket data. Return ONLY valid JSON, no markdown. This may be an Amrize-style ticket (has TRUCK NO./PLANT CODE/HAULER fields) or a Preferred Materials-style ticket (has Yard/Truck/Driver Delivery Location fields instead — no plant code system). Format: {"ticket":"#, from TICKET # in the top right, or Ticket # field","date":"date","pickup":"pickup location — for a Preferred-style ticket, use the Yard name shown top-left, e.g. Grayson County Sand & Gravel","deliver":"delivery location — for a Preferred-style ticket, use the stamped DRIVER DELIVERY LOCATION text, e.g. MELISSA","tons":"the NET tons figure specifically (not Gross, not M-Tons/metric tons) — for a ticket with a Tons/Pounds/M-Tons table, use the Net row\'s Tons column","gross_tons":"if the same weight table shows a Gross row, its Tons value — otherwise omit this field entirely","tare_tons":"if the same weight table shows a Tare row, its Tons value — otherwise omit this field entirely","hauler_number":"if shown, the value next to HAULER: on the ticket","truck_number":"if shown, the value next to TRUCK NO. on an Amrize-style ticket specifically","plant_code":"if shown, the code like P4958 next to CUSTOMER: or ZONE: — format is P then 4 digits","origin_hint":"the supplier/yard at top of ticket, e.g. Ambrose Sand & Gravel, Melissa Yard Crushed Stone, Royse City Yard, or Grayson County Sand & Gravel","supplier_truck_id":"if this is a Preferred-style ticket, the full value next to Truck: near the top, e.g. 04 - AG TRANSPORT — this is the CARRIER\'S own internal truck/driver reference, distinct from TRUCK NO.","material":"if shown","time":"if shown, the value next to TIME on the ticket, e.g. 1:59 pm","customer_name":"if shown, the value next to CUSTOMER NAME on the ticket, e.g. MCKINNEY READY MIX PLANT","customer_number":"if shown, the value next to CUSTOMER: on the ticket (may match the zone code)","zone":"if shown, the value next to ZONE: on the ticket","product_code":"if shown, the value next to PRODUCT CODE on the ticket","product":"if shown, the value next to PRODUCT on the ticket, e.g. SG,CONCRETE SAND,#4-#200,W"}' }] }], 600);
+      const text = await callClaude([{ role: 'user', content: [block, { type: 'text', text: 'Extract load ticket data. Return ONLY valid JSON, no markdown. This may be an Amrize-style ticket (has TRUCK NO./PLANT CODE/HAULER fields), a Preferred Materials-style ticket (has Yard/Truck/Driver Delivery Location fields instead — no plant code system), or a Resolve Aggregates-style ticket (has Customer/Order/P.O./Product/Carrier/Location/Vehicle fields — no plant code or Yard system, and critically no delivery address is printed anywhere on the ticket; the job/destination is identified only by the P.O. field, e.g. "RPMx - 5203P.005"). Format: {"ticket":"#, from TICKET # in the top right, or Ticket # field, or Ticket No: field","date":"date","pickup":"pickup location — for a Preferred-style ticket, use the Yard name shown top-left, e.g. Grayson County Sand & Gravel — for a Resolve Aggregates-style ticket, use the Location field, e.g. Ravenna 2 - Resolve Aggregates","deliver":"delivery location — for a Preferred-style ticket, use the stamped DRIVER DELIVERY LOCATION text, e.g. MELISSA — for a Resolve Aggregates-style ticket there is NO delivery address printed, so use the P.O. field text instead as a stand-in for the job site, e.g. RPMx - 5203P.005","tons":"the NET tons figure specifically (not Gross, not M-Tons/metric tons) — for a ticket with a Tons/Pounds/M-Tons table, use the Net row\'s Tons column","gross_tons":"if the same weight table shows a Gross row, its Tons value — otherwise omit this field entirely","tare_tons":"if the same weight table shows a Tare row, its Tons value — otherwise omit this field entirely","hauler_number":"if shown, the value next to HAULER: on the ticket","truck_number":"if shown, the value next to TRUCK NO. on an Amrize-style ticket specifically","plant_code":"if shown, the code like P4958 next to CUSTOMER: or ZONE: — format is P then 4 digits","origin_hint":"the supplier/yard/plant at top of ticket, e.g. Ambrose Sand & Gravel, Melissa Yard Crushed Stone, Royse City Yard, Grayson County Sand & Gravel, or Ravenna 2 - Resolve Aggregates","supplier_truck_id":"if this is a Preferred-style ticket, the full value next to Truck: near the top, e.g. 04 - AG TRANSPORT — this is the CARRIER\'S own internal truck/driver reference, distinct from TRUCK NO.","po_number":"if this is a Resolve Aggregates-style ticket, the value next to P.O.: on the ticket, e.g. RPMx - 5203P.005 — otherwise omit this field entirely","order_number":"if this is a Resolve Aggregates-style ticket, the value next to Order: on the ticket — otherwise omit this field entirely","vehicle_id":"if this is a Resolve Aggregates-style ticket, the value next to Vehicle: on the ticket, e.g. 19702_EAE — otherwise omit this field entirely","material":"if shown","time":"if shown, the value next to TIME on the ticket, e.g. 1:59 pm","customer_name":"if shown, the value next to CUSTOMER NAME or Customer: on the ticket, e.g. MCKINNEY READY MIX PLANT or RPM xConstruction, LLC","customer_number":"if shown, the value next to CUSTOMER: on the ticket (may match the zone code)","zone":"if shown, the value next to ZONE: on the ticket","product_code":"if shown, the value next to PRODUCT CODE on the ticket","product":"if shown, the value next to PRODUCT on the ticket, e.g. SG,CONCRETE SAND,#4-#200,W or Concrete Sand"}' }] }], 600);
       const t = JSON.parse(text);
       t.file = f.name;
       // Weight-math safety check — Net should equal Gross minus Tare. If the ticket's
@@ -2707,6 +2721,30 @@ async function processTickets() {
             if (prefMatch) {
               t.rate_direct = prefMatch.rate_per_ton;
               t.rate_match_label = `${prefMatch.origin.replace(/^Preferred:\s*/i,'')} → ${prefMatch.plant_name} @ $${prefMatch.rate_per_ton.toFixed(2)}/ton`;
+            }
+          }
+        }
+        // Third matching path — Resolve Aggregates tickets have no plant code and no delivery
+        // address at all. The job/destination is identified only by the P.O. text (stored in
+        // "deliver" per the extraction prompt above), matched against a Rates row's plant_name
+        // field (reused here to hold the job's P.O./nickname instead of a plant name). Resolve's
+        // rate is really $0.21/loaded ton-mile, but since mileage is fixed per job, the Rates row
+        // just stores the pre-calculated $/ton for that job (mileage × $0.21) — same flat-rate
+        // mechanism as Amrize/Preferred, no new math needed here. Matching is fuzzy (normalized,
+        // either-contains-the-other) because OCR won't reproduce the P.O. text byte-for-byte the
+        // same way every time.
+        if (!t.rate_direct && (hint.includes('resolve') || hint.includes('ravenna'))) {
+          const norm = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+          const poNorm = norm(t.deliver || t.po_number);
+          if (poNorm) {
+            const resolveMatch = DB.rates.find(r => {
+              if (!r.active || r.origin.toLowerCase() !== 'resolve: ravenna 2') return false;
+              const planNorm = norm(r.plant_name);
+              return planNorm && (poNorm.includes(planNorm) || planNorm.includes(poNorm));
+            });
+            if (resolveMatch) {
+              t.rate_direct = resolveMatch.rate_per_ton;
+              t.rate_match_label = `Ravenna 2 → ${resolveMatch.plant_name} @ $${resolveMatch.rate_per_ton.toFixed(2)}/ton`;
             }
           }
         }
@@ -5725,18 +5763,62 @@ function openFSCRateForm(id) {
 // entry for the week instead of creating a separate one for the new carrier.
 function populateFscCarrierSelect(selectedCarrier) {
   const select = document.getElementById('fsc-rate-carrier');
-  const knownCarriers = [...new Set(['Amrize', 'Preferred Materials', ...(DB.fscRates||[]).map(x => x.carrier || 'Amrize')])].sort();
+  const knownCarriers = [...new Set(['Amrize', 'Preferred Materials', 'Resolve Aggregates', ...(DB.fscRates||[]).map(x => x.carrier || 'Amrize')])].sort();
   let optionsHtml = selectedCarrier ? '' : `<option value="" disabled selected>— Select carrier —</option>`;
   optionsHtml += knownCarriers.map(c => `<option value="${c.replace(/"/g,'&quot;')}" ${c===selectedCarrier?'selected':''}>${c}</option>`).join('');
   optionsHtml += `<option value="__new__">➕ Type a new carrier…</option>`;
   select.innerHTML = optionsHtml;
   document.getElementById('fsc-rate-carrier-custom-wrap').style.display = 'none';
   document.getElementById('fsc-rate-carrier-custom').value = '';
+  toggleResolveEstimateButton();
 }
 
 function onFscRateCarrierChange() {
   const select = document.getElementById('fsc-rate-carrier');
   document.getElementById('fsc-rate-carrier-custom-wrap').style.display = select.value === '__new__' ? 'block' : 'none';
+  toggleResolveEstimateButton();
+}
+
+// The diesel-price estimate only makes sense for Resolve Aggregates — every other carrier's
+// FSC% still comes from their own published weekly rate, entered by hand same as always.
+function toggleResolveEstimateButton() {
+  const select = document.getElementById('fsc-rate-carrier');
+  const wrap = document.getElementById('fsc-rate-resolve-estimate-wrap');
+  if (!wrap) return;
+  wrap.style.display = select.value === 'Resolve Aggregates' ? 'block' : 'none';
+  document.getElementById('fsc-rate-resolve-estimate-result').textContent = '';
+}
+
+// Fetches the EIA's weekly Gulf Coast diesel price nearest the selected week, runs it through
+// the $3.25-table math server-side, and fills the % field with the SUGGESTED value — John still
+// has to hit Save himself, same confirm-before-save pattern as every other FSC% in this app.
+async function estimateResolveFscPct() {
+  const resultEl = document.getElementById('fsc-rate-resolve-estimate-result');
+  const weekStart = document.getElementById('fsc-rate-week-start').value;
+  if (!weekStart) { showGlobalAlert('⚠ Pick a week start date first.', 'err'); return; }
+  resultEl.textContent = '⏳ Checking EIA diesel price…';
+  resultEl.style.color = 'var(--text3)';
+  try {
+    // Direct (not no-cors) POST, same pattern as callClaude's proxy call — this one needs
+    // to actually read the JSON back, which gasPost's fire-and-forget no-cors mode can't do.
+    const fetchResp = await fetch(SYNC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ action: 'getResolveFscEstimate', date: weekStart })
+    });
+    const resp = await fetchResp.json();
+    if (!resp || resp.error) {
+      resultEl.textContent = '⚠ ' + (resp && resp.error ? resp.error : 'Could not get an estimate.');
+      resultEl.style.color = 'var(--amber)';
+      return;
+    }
+    document.getElementById('fsc-rate-pct').value = resp.pct;
+    resultEl.innerHTML = `✨ ${resp.region} diesel averaged $${resp.price.toFixed(3)}/gal (week of ${resp.period}) → suggested <b>${resp.pct}%</b>. Double-check against your own table before saving.`;
+    resultEl.style.color = 'var(--green)';
+  } catch (e) {
+    resultEl.textContent = '⚠ ' + e.message;
+    resultEl.style.color = 'var(--amber)';
+  }
 }
 
 function closeFSCRateModal() {
@@ -5789,6 +5871,97 @@ async function deleteFSCRateForm() {
   closeFSCRateModal();
   await gasPost({action: 'deleteFSCRate', id: editId});
   showGlobalAlert('🗑 FSC rate deleted', 'ok');
+}
+
+// ─── RESOLVE AGGREGATES JOBS (per-job flat rate, $0.21/loaded ton-mile) ──────────────
+// These live in the same Rates tab/matching mechanism Amrize and Preferred already use —
+// this is just a friendlier in-app way to add a row there instead of editing the Google
+// Sheet by hand. origin is always fixed to 'Resolve: Ravenna 2' (what detectCarrierAndOrigin
+// tags a Resolve ticket with); plant_name holds the P.O./job text since Resolve tickets print
+// no delivery address to use instead.
+const RESOLVE_ORIGIN = 'Resolve: Ravenna 2';
+
+function renderResolveJobList() {
+  const el = document.getElementById('resolve-job-list');
+  const summaryEl = document.getElementById('resolve-job-list-summary');
+  if (!el) return;
+  const jobs = (DB.rates||[]).filter(r => r.origin === RESOLVE_ORIGIN);
+  if (!jobs.length) {
+    el.innerHTML = '<div class="empty"><span class="empty-icon">🪨</span>No Resolve jobs set up yet</div>';
+    if (summaryEl) summaryEl.textContent = 'No jobs added yet';
+    return;
+  }
+  if (summaryEl) summaryEl.textContent = `${jobs.length} job${jobs.length===1?'':'s'} set up — tap to view`;
+  el.innerHTML = jobs.map(j => `<div class="card" style="padding:10px 14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+    <div>
+      <div style="font-weight:600;">${j.plant_name}</div>
+      <div style="font-size:12px;color:var(--text2);">${j.notes||''}</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <div style="font-family:'Barlow Condensed',sans-serif;font-size:22px;font-weight:700;color:var(--accent);">$${parseFloat(j.rate_per_ton||0).toFixed(2)}/ton</div>
+      <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="openResolveJobForm('${String(j.plant_name).replace(/'/g,"\\'").replace(/"/g,'&quot;')}')">✏️</button>
+    </div>
+  </div>`).join('');
+}
+
+function openResolveJobForm(poRef) {
+  const j = poRef ? (DB.rates||[]).find(r => r.origin === RESOLVE_ORIGIN && r.plant_name === poRef) : null;
+  document.getElementById('resolve-job-modal-title').textContent = j ? '🪨 Edit Resolve Job' : '🪨 Add Resolve Job';
+  const poInput = document.getElementById('resolve-job-po');
+  poInput.value = j ? j.plant_name : '';
+  poInput.dataset.origPlantName = j ? j.plant_name : '';
+  document.getElementById('resolve-job-miles').value = '';
+  document.getElementById('resolve-job-rate').value = j ? j.rate_per_ton : '';
+  document.getElementById('resolve-job-notes').value = j ? (j.notes||'') : '';
+  document.getElementById('resolve-job-delete-btn').style.display = j ? 'inline-flex' : 'none';
+  document.getElementById('resolve-job-modal').style.display = 'flex';
+}
+
+function closeResolveJobModal() {
+  document.getElementById('resolve-job-modal').style.display = 'none';
+}
+
+// Mileage × $0.21 fills the rate field automatically — still a plain editable number
+// afterward, so it can be nudged to match Resolve's own invoice if theirs rounds slightly
+// differently (e.g. the sample quote showed $14.25 against a computed $14.28).
+function recalcResolveJobRate() {
+  const miles = parseFloat(document.getElementById('resolve-job-miles').value);
+  if (!isNaN(miles) && miles > 0) {
+    document.getElementById('resolve-job-rate').value = (miles * 0.21).toFixed(2);
+  }
+}
+
+async function saveResolveJobForm() {
+  const poInput = document.getElementById('resolve-job-po');
+  const plantName = poInput.value.trim();
+  const origPlantName = poInput.dataset.origPlantName || '';
+  if (!plantName) { showGlobalAlert('⚠ Enter the P.O./job reference as it appears on the ticket.', 'err'); return; }
+  const rate = parseFloat(document.getElementById('resolve-job-rate').value);
+  if (isNaN(rate) || rate <= 0) { showGlobalAlert('⚠ Enter a mileage (to calculate the rate) or the rate itself.', 'err'); return; }
+  const notes = document.getElementById('resolve-job-notes').value.trim();
+
+  const dupe = (DB.rates||[]).find(r => r.origin === RESOLVE_ORIGIN && r.plant_name === plantName && r.plant_name !== origPlantName);
+  if (dupe) { showGlobalAlert('⚠ A Resolve job with that P.O./job reference already exists.', 'err'); return; }
+
+  const job = { status: 'ACTIVE', origin: RESOLVE_ORIGIN, supplier: 'Resolve Aggregates', servcagent: '', plant_code: '', plant_name: plantName, rate_per_ton: rate, notes, active: true, orig_plant_name: origPlantName };
+
+  const idx = (DB.rates||[]).findIndex(r => r.origin === RESOLVE_ORIGIN && r.plant_name === origPlantName);
+  if (idx >= 0) { DB.rates[idx] = {...DB.rates[idx], ...job}; } else { DB.rates.push(job); }
+  save(); renderResolveJobList();
+  closeResolveJobModal();
+  await gasPost({action: 'saveResolveJob', job});
+  showGlobalAlert(`✅ ${plantName} set to $${rate.toFixed(2)}/ton`, 'ok');
+}
+
+async function deleteResolveJobForm() {
+  const origPlantName = document.getElementById('resolve-job-po').dataset.origPlantName;
+  if (!origPlantName) return;
+  if (!confirm(`Remove the Resolve job "${origPlantName}"? Tickets for that P.O. will stop auto-filling a rate until you add it back.`)) return;
+  DB.rates = (DB.rates||[]).filter(r => !(r.origin === RESOLVE_ORIGIN && r.plant_name === origPlantName));
+  save(); renderResolveJobList();
+  closeResolveJobModal();
+  await gasPost({action: 'deleteResolveJob', plant_name: origPlantName});
+  showGlobalAlert('🗑 Resolve job removed', 'ok');
 }
 
 function openInvoiceSettingsModal() {
@@ -6610,6 +6783,7 @@ function detectCarrierAndOrigin(t) {
   if (hint.includes('stringtown')) return { carrier: 'Preferred Materials', origin: 'Preferred: Stringtown' };
   if (hint.includes('holcim')) return { carrier: 'Preferred Materials', origin: 'Preferred: Holcim' };
   if (hint.includes('united sand') || hint.includes('united s&g') || hint.includes('ivanhoe')) return { carrier: 'Preferred Materials', origin: 'Preferred: United Sand & Gravel' };
+  if (hint.includes('ravenna') || hint.includes('resolve')) return { carrier: 'Resolve Aggregates', origin: 'Resolve: Ravenna 2' };
   // Anything unrecognized still gets counted — labeled by whatever the ticket shows so nothing
   // silently vanishes from the report, it just won't have a clean carrier name yet.
   return { carrier: 'Other / Unmatched', origin: t.origin_hint || t.pickup || 'Unknown origin' };
@@ -7139,7 +7313,7 @@ function renderAll() {
   const wp = document.getElementById('panel-weekly');
   if (wp && wp.classList.contains('active')) renderWeekly();
   const rp = document.getElementById('panel-reports');
-  if (rp && rp.classList.contains('active')) { populateReportYearFilter(); renderReportPreview(); renderEAReportPreview(); renderEAReportSummary(); renderInvoiceHistory(); renderFSCRateList(); }
+  if (rp && rp.classList.contains('active')) { populateReportYearFilter(); renderReportPreview(); renderEAReportPreview(); renderEAReportSummary(); renderInvoiceHistory(); renderFSCRateList(); renderResolveJobList(); }
   const dp = document.getElementById('panel-drivers');
   if (dp && dp.classList.contains('active')) renderDriverPay();
 }
@@ -7896,6 +8070,10 @@ if ('serviceWorker' in navigator) {
       <label>FSC % (e.g. 10 for 10%)</label>
       <input type="number" step="0.01" id="fsc-rate-pct" placeholder="10">
     </div>
+    <div id="fsc-rate-resolve-estimate-wrap" style="display:none;margin:-4px 0 10px;">
+      <button type="button" class="btn" style="font-size:12px;padding:6px 10px;" onclick="estimateResolveFscPct()">🔮 Estimate from this week's diesel price</button>
+      <div id="fsc-rate-resolve-estimate-result" style="font-size:11px;color:var(--text3);margin-top:5px;"></div>
+    </div>
     <div class="invoice-field">
       <label>Notes (optional)</label>
       <input type="text" id="fsc-rate-notes" placeholder="">
@@ -7904,6 +8082,35 @@ if ('serviceWorker' in navigator) {
       <button class="btn btn-red" id="fsc-rate-delete-btn" style="display:none;margin-right:auto;" onclick="deleteFSCRateForm()">🗑 Delete</button>
       <button class="btn" onclick="closeFSCRateModal()">Cancel</button>
       <button class="btn btn-green" onclick="saveFSCRateForm()">✅ Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="resolve-job-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;align-items:center;justify-content:center;padding:16px;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;width:100%;max-width:420px;max-height:85vh;overflow-y:auto;">
+    <div class="invoice-modal-title" id="resolve-job-modal-title">🪨 Add Resolve Job</div>
+    <div class="invoice-field">
+      <label>P.O. / Job Reference (as it appears on the ticket)</label>
+      <input type="text" id="resolve-job-po" placeholder="e.g. RPMx - 5203P.005">
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">This is how scanned tickets find this job — it doesn't need to match exactly letter-for-letter, just closely.</div>
+    </div>
+    <div class="invoice-field">
+      <label>Mileage (one-way, loaded)</label>
+      <input type="number" step="0.1" id="resolve-job-miles" placeholder="68" oninput="recalcResolveJobRate()">
+    </div>
+    <div class="invoice-field">
+      <label>Rate per ton ($0.21 × mileage)</label>
+      <input type="number" step="0.01" id="resolve-job-rate">
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">Fills in automatically from mileage — override it if Resolve's own invoice shows a slightly different rounded number.</div>
+    </div>
+    <div class="invoice-field">
+      <label>Notes (optional — job name is handy here)</label>
+      <input type="text" id="resolve-job-notes" placeholder="e.g. Southside Hills Ph.1 (Rockwall)">
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px;">
+      <button class="btn btn-red" id="resolve-job-delete-btn" style="display:none;margin-right:auto;" onclick="deleteResolveJobForm()">🗑 Delete</button>
+      <button class="btn" onclick="closeResolveJobModal()">Cancel</button>
+      <button class="btn btn-green" onclick="saveResolveJobForm()">✅ Save</button>
     </div>
   </div>
 </div>
