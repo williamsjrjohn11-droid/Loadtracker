@@ -5311,7 +5311,8 @@ function updatePayoutTotal() {
     }
   });
   // Broker fee comes out of the base rate ONLY — computed off the subtotal before FSC is
-  // added, so the driver keeps 100% of their fuel surcharge no matter the fee %.
+  // added, so the driver keeps 100% of their fuel surcharge no matter the fee %. Applies to
+  // the driver's full gross across all his loads this payout, Resolve included.
   const feePct = parseFloat(document.getElementById('payout-fee-pct')?.value || 0) || 0;
   const feeDollar = total * (feePct/100);
   const feeDisplayEl = document.getElementById('payout-fee-dollar-display');
