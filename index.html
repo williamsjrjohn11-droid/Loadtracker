@@ -5904,6 +5904,47 @@ function renderResolveJobList() {
   </div>`).join('');
 }
 
+// Reads just the P.O. field off a photographed Resolve ticket and fills the form with it —
+// saves retyping it (and the typo risk that comes with it) when setting up a new job. Mileage
+// still has to be entered by hand since it's never printed on the ticket itself — it only
+// comes from the project quote/contract, same as the 68mi Rockwall example.
+async function scanResolveJobTicket(file) {
+  if (!file) return;
+  const statusEl = document.getElementById('resolve-job-scan-status');
+  statusEl.textContent = '🤖 Reading ticket…';
+  statusEl.style.color = 'var(--text3)';
+  try {
+    let b64, mt;
+    if (file.type && file.type.includes('pdf')) {
+      b64 = await fileToB64(file);
+      mt = 'application/pdf';
+    } else {
+      const converted = await fileToJpegB64(file);
+      b64 = converted.b64;
+      mt = 'image/jpeg';
+    }
+    const block = mt.includes('pdf')
+      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } }
+      : { type: 'image', source: { type: 'base64', media_type: mt, data: b64 } };
+    const text = await callClaude([{ role: 'user', content: [block, { type: 'text', text: 'This is a Resolve Aggregates-style trucking scale ticket (has Customer/Order/P.O./Product/Carrier/Location/Vehicle fields). Return ONLY valid JSON, no markdown: {"po_number":"the value next to P.O.: on the ticket, e.g. RPMx - 5203P.005","location":"the value next to Location: on the ticket, e.g. Ravenna 2 - Resolve Aggregates"}' }] }], 300);
+    const d = JSON.parse(text);
+    if (!d.po_number) {
+      statusEl.textContent = '⚠ Could not find a P.O. field on that ticket — enter it by hand.';
+      statusEl.style.color = 'var(--amber)';
+      return;
+    }
+    document.getElementById('resolve-job-po').value = d.po_number;
+    const offLocation = d.location && !/ravenna|resolve/i.test(d.location);
+    statusEl.innerHTML = offLocation
+      ? `✅ Found P.O.: <b>${d.po_number}</b> — ⚠ but this ticket's Location ("${d.location}") doesn't look like Ravenna 2, double-check it's the right job before saving.`
+      : `✅ Found P.O.: <b>${d.po_number}</b> — now enter this job's mileage below (not printed on the ticket).`;
+    statusEl.style.color = offLocation ? 'var(--amber)' : 'var(--green)';
+  } catch (e) {
+    statusEl.textContent = '⚠ ' + e.message;
+    statusEl.style.color = 'var(--amber)';
+  }
+}
+
 function openResolveJobForm(poRef) {
   const j = poRef ? (DB.rates||[]).find(r => r.origin === RESOLVE_ORIGIN && r.plant_name === poRef) : null;
   document.getElementById('resolve-job-modal-title').textContent = j ? '🪨 Edit Resolve Job' : '🪨 Add Resolve Job';
@@ -5913,6 +5954,8 @@ function openResolveJobForm(poRef) {
   document.getElementById('resolve-job-miles').value = '';
   document.getElementById('resolve-job-rate').value = j ? j.rate_per_ton : '';
   document.getElementById('resolve-job-notes').value = j ? (j.notes||'') : '';
+  document.getElementById('resolve-job-scan-status').textContent = '';
+  document.getElementById('resolve-job-scan-input').value = '';
   document.getElementById('resolve-job-delete-btn').style.display = j ? 'inline-flex' : 'none';
   document.getElementById('resolve-job-modal').style.display = 'flex';
 }
@@ -8089,6 +8132,11 @@ if ('serviceWorker' in navigator) {
 <div id="resolve-job-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;align-items:center;justify-content:center;padding:16px;">
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;width:100%;max-width:420px;max-height:85vh;overflow-y:auto;">
     <div class="invoice-modal-title" id="resolve-job-modal-title">🪨 Add Resolve Job</div>
+    <div class="invoice-field">
+      <input type="file" id="resolve-job-scan-input" accept="image/*,.pdf" style="display:none;" onchange="scanResolveJobTicket(this.files[0])">
+      <button type="button" class="btn" style="width:100%;background:var(--surface2);border:1px solid var(--border2);" onclick="document.getElementById('resolve-job-scan-input').click()">📷 Scan a ticket to fill this in</button>
+      <div id="resolve-job-scan-status" style="font-size:11px;color:var(--text3);margin-top:5px;"></div>
+    </div>
     <div class="invoice-field">
       <label>P.O. / Job Reference (as it appears on the ticket)</label>
       <input type="text" id="resolve-job-po" placeholder="e.g. RPMx - 5203P.005">
