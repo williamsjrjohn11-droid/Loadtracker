@@ -438,10 +438,25 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
       <button class="chip" onclick="fT('dupes',this)" style="background:rgba(66,133,244,0.1);color:#4285F4;border-color:rgba(66,133,244,0.3);">🔍 Possible Duplicates</button>
       <div style="display:flex;align-items:center;background:var(--bg2,#1e2130);border:1px solid var(--border);border-radius:20px;padding:5px 12px;gap:6px;margin-left:auto;">
         <span style="color:var(--text3);font-size:13px;">🔍</span>
-        <input id="ticket-search" type="text" placeholder="Search tickets..." oninput="renderTickets()" style="background:none;border:none;outline:none;color:var(--text);font-size:13px;width:150px;" />
+        <input id="ticket-search" type="text" placeholder="Search tickets, customer..." oninput="renderTickets()" style="background:none;border:none;outline:none;color:var(--text);font-size:13px;width:170px;" />
       </div>
-      <select id="f-sett" onchange="fS(this.value)"></select>
-      <select id="f-driver" onchange="fD(this.value)"></select>
+    </div>
+    <div class="filter-row" style="flex-wrap:wrap;gap:10px;align-items:center;margin-top:6px;">
+      <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text3);">Customer
+        <select id="f-cust" onchange="fC(this.value)" style="font-size:12px;"></select>
+      </label>
+      <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text3);">Driver
+        <select id="f-driver" onchange="fD(this.value)" style="font-size:12px;"></select>
+      </label>
+      <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text3);" title="Only shows tickets belonging to one uploaded Amrize/Axelar settlement batch — not a customer filter">Settlement
+        <select id="f-sett" onchange="fS(this.value)" style="font-size:12px;"></select>
+      </label>
+      <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text3);">Date
+        <input id="f-date-from" type="date" onchange="fDate()" style="font-size:12px;padding:4px 6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);">
+        <span>to</span>
+        <input id="f-date-to" type="date" onchange="fDate()" style="font-size:12px;padding:4px 6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);">
+      </label>
+      <button class="chip" onclick="clearTicketFilters()" style="font-size:12px;">✕ Clear filters</button>
     </div>
     <div class="table-wrap">
       <table>
@@ -793,7 +808,7 @@ const KEY = 'loadtracker_v5';
 const AKEY = 'lt_apikey';
 let DB = { settlements: [], tickets: [], rates: [], drivers: [], driverSettlements: [], eaInvoices: [], fscRates: [], trucks: [], ownerDraws: [] };
 let _lastUsedDriver = '';
-let tFilter = 'all', sFilter = '', dFilter = '';
+let tFilter = 'all', sFilter = '', dFilter = '', custFilter = '', dateFromFilter = '', dateToFilter = '';
 let settFiles = [], ticketFiles = [];
 
 // GOOGLE SHEETS
@@ -3845,16 +3860,23 @@ function renderTickets() {
   if (tFilter === 'axelar') t = t.filter(x => (x.business||'axelar') === 'axelar');
   if (dFilter) t = t.filter(x => x.driver === dFilter);
   if (sFilter) t = t.filter(x => x.settlement_id === sFilter);
+  if (custFilter) t = t.filter(x => ticketCustomerLabel(x) === custFilter);
+  if (dateFromFilter) {
+    const from = parseLocalDate(dateFromFilter);
+    t = t.filter(x => { const d = parseLocalDate(x.date); return d && from && d >= from; });
+  }
+  if (dateToFilter) {
+    const to = parseLocalDate(dateToFilter);
+    if (to) to.setHours(23,59,59,999);
+    t = t.filter(x => { const d = parseLocalDate(x.date); return d && to && d <= to; });
+  }
+  const searchQ = (document.getElementById('ticket-search')?.value||'').toLowerCase().trim();
+  if (searchQ) {
+    t = t.filter(x => [x.ticket, x.date, x.pickup, x.deliver, ticketCustomerLabel(x)].join(' ').toLowerCase().includes(searchQ));
+  }
   const tb = document.getElementById('t-body');
   if (!t.length) { tb.innerHTML = `<tr><td colspan="10"><div class="empty"><span class="empty-icon">🔍</span>No tickets found</div></td></tr>`; return; }
-  tb.innerHTML = t.map(x => {
-    const searchQ = (document.getElementById('ticket-search')?.value||'').toLowerCase().trim();
-    if (searchQ) {
-      const haystack = [x.ticket,x.date,x.pickup,x.deliver].join(' ').toLowerCase();
-      if (!haystack.includes(searchQ)) return '';
-    }
-    return renderTicketRow(x);
-  }).join('');
+  tb.innerHTML = t.map(x => renderTicketRow(x)).join('');
 }
 
 function renderTicketRow(x) {
@@ -5560,6 +5582,23 @@ function populateSel() {
   const driverNames = [...new Set([...rosterNames, ...ticketNames].filter(Boolean))].sort();
   const dEl = document.getElementById('f-driver');
   if (dEl) dEl.innerHTML = '<option value="">All drivers</option>' + driverNames.map(n => `<option value="${n.replace(/"/g,'&quot;')}">${n}</option>`).join('');
+
+  // "Customer" here means whoever's printed on the ticket as the customer (Resolve-style
+  // tickets print one explicitly); when a ticket has no customer_name field at all, its
+  // detected carrier (Amrize, Preferred Materials, etc.) is used as a reasonable stand-in
+  // so this filter stays useful for every ticket, not just Resolve's.
+  const custEl = document.getElementById('f-cust');
+  if (custEl) {
+    const custNames = [...new Set((DB.tickets||[]).map(t => ticketCustomerLabel(t)).filter(Boolean))].sort();
+    custEl.innerHTML = '<option value="">All customers</option>' + custNames.map(n => `<option value="${n.replace(/"/g,'&quot;')}">${n}</option>`).join('');
+  }
+}
+
+function ticketCustomerLabel(t) {
+  const cn = String(t.customer_name || '').trim();
+  if (cn) return cn;
+  const carrier = detectCarrierAndOrigin(t).carrier;
+  return carrier && carrier !== 'Other / Unmatched' ? carrier : '';
 }
 
 function fT(f, btn) { tFilter = f; document.querySelectorAll('.chip').forEach(c => c.classList.remove('active')); if(btn) btn.classList.add('active'); renderTickets(); }
@@ -5574,6 +5613,22 @@ function fW(f, btn) {
 }
 function fS(v) { sFilter = v; renderTickets(); }
 function fD(v) { dFilter = v; renderTickets(); }
+function fC(v) { custFilter = v; renderTickets(); }
+function fDate() {
+  dateFromFilter = document.getElementById('f-date-from')?.value || '';
+  dateToFilter = document.getElementById('f-date-to')?.value || '';
+  renderTickets();
+}
+function clearTicketFilters() {
+  custFilter = ''; dFilter = ''; sFilter = ''; dateFromFilter = ''; dateToFilter = '';
+  const custEl = document.getElementById('f-cust'); if (custEl) custEl.value = '';
+  const driverEl = document.getElementById('f-driver'); if (driverEl) driverEl.value = '';
+  const settEl = document.getElementById('f-sett'); if (settEl) settEl.value = '';
+  const fromEl = document.getElementById('f-date-from'); if (fromEl) fromEl.value = '';
+  const toEl = document.getElementById('f-date-to'); if (toEl) toEl.value = '';
+  const searchEl = document.getElementById('ticket-search'); if (searchEl) searchEl.value = '';
+  renderTickets();
+}
 
 function delS(id) {
   if (!confirm('Delete this settlement and its tickets?')) return;
