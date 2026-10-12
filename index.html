@@ -8154,6 +8154,32 @@ if ('serviceWorker' in navigator) {
     <div id="fsc-rate-resolve-estimate-wrap" style="display:none;margin:-4px 0 10px;">
       <button type="button" class="btn" style="font-size:12px;padding:6px 10px;" onclick="estimateResolveFscPct()">🔮 Estimate from this week's diesel price</button>
       <div id="fsc-rate-resolve-estimate-result" style="font-size:11px;color:var(--text3);margin-top:5px;"></div>
+      <details style="margin-top:8px;">
+        <summary style="font-size:11px;color:var(--text3);cursor:pointer;">📋 View $3.25 Fuel Surcharge Table (Resolve Aggregates' own reference)</summary>
+        <div style="margin-top:6px;max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
+          <table style="width:100%;border-collapse:collapse;font-size:11px;">
+            <thead style="position:sticky;top:0;background:var(--surface2);">
+              <tr>
+                <th style="padding:5px 8px;text-align:left;border-bottom:1px solid var(--border);">From</th>
+                <th style="padding:5px 8px;text-align:left;border-bottom:1px solid var(--border);">To</th>
+                <th style="padding:5px 8px;text-align:right;border-bottom:1px solid var(--border);">Surcharge %</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${(() => {
+                const rows = [];
+                for (let i = 0; i < 21; i++) {
+                  const lo = (3.25 + i * 0.10).toFixed(2);
+                  const hi = (3.34 + i * 0.10).toFixed(2);
+                  rows.push(`<tr><td style="padding:4px 8px;color:var(--text2);">$${lo}</td><td style="padding:4px 8px;color:var(--text2);">$${hi}</td><td style="padding:4px 8px;text-align:right;color:var(--text);">${i+1}.00%</td></tr>`);
+                }
+                return rows.join('');
+              })()}
+            </tbody>
+          </table>
+        </div>
+        <div style="font-size:10px;color:var(--text3);margin-top:4px;">Below $3.25/gal → 0% (no surcharge). Based on Gulf Coast (EIA PADD 3) weekly average diesel price.</div>
+      </details>
     </div>
     <div class="invoice-field">
       <label>Notes (optional)</label>
