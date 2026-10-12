@@ -5906,16 +5906,24 @@ function renderResolveJobList() {
     return;
   }
   if (summaryEl) summaryEl.textContent = `${jobs.length} job${jobs.length===1?'':'s'} set up — tap to view`;
-  el.innerHTML = jobs.map(j => `<div class="card" style="padding:10px 14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+  el.innerHTML = jobs.map(j => {
+    let addedLabel = '';
+    if (j.created_at) {
+      const d = new Date(j.created_at);
+      if (!isNaN(d.getTime())) addedLabel = `Added ${d.getMonth()+1}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`;
+    }
+    return `<div class="card" style="padding:10px 14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
     <div>
       <div style="font-weight:600;">${j.plant_name}</div>
       <div style="font-size:12px;color:var(--text2);">${j.notes||''}</div>
+      ${addedLabel ? `<div style="font-size:11px;color:var(--text3);margin-top:2px;">${addedLabel}</div>` : ''}
     </div>
     <div style="display:flex;align-items:center;gap:10px;">
       <div style="font-family:'Barlow Condensed',sans-serif;font-size:22px;font-weight:700;color:var(--accent);">$${parseFloat(j.rate_per_ton||0).toFixed(2)}/ton</div>
       <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="openResolveJobForm('${String(j.plant_name).replace(/'/g,"\\'").replace(/"/g,'&quot;')}')">✏️</button>
     </div>
-  </div>`).join('');
+  </div>`;
+  }).join('');
 }
 
 // Reads just the P.O. field off a photographed Resolve ticket and fills the form with it —
@@ -6013,9 +6021,12 @@ async function saveResolveJobForm() {
   const dupe = (DB.rates||[]).find(r => r.origin === RESOLVE_ORIGIN && r.plant_name === plantName && r.plant_name !== origPlantName);
   if (dupe) { showGlobalAlert('⚠ A Resolve job with that P.O./job reference already exists.', 'err'); return; }
 
-  const job = { status: 'ACTIVE', origin: RESOLVE_ORIGIN, supplier: 'Resolve Aggregates', servcagent: '', plant_code: '', plant_name: plantName, rate_per_ton: rate, notes, active: true, orig_plant_name: origPlantName };
-
   const idx = (DB.rates||[]).findIndex(r => r.origin === RESOLVE_ORIGIN && r.plant_name === origPlantName);
+  // New job gets today's timestamp; editing an existing one keeps its original "Added" date
+  // rather than bumping it every time the mileage gets corrected.
+  const createdAt = (idx >= 0 && DB.rates[idx].created_at) ? DB.rates[idx].created_at : new Date().toISOString();
+  const job = { status: 'ACTIVE', origin: RESOLVE_ORIGIN, supplier: 'Resolve Aggregates', servcagent: '', plant_code: '', plant_name: plantName, rate_per_ton: rate, notes, active: true, orig_plant_name: origPlantName, created_at: createdAt };
+
   if (idx >= 0) { DB.rates[idx] = {...DB.rates[idx], ...job}; } else { DB.rates.push(job); }
   save(); renderResolveJobList();
   closeResolveJobModal();
