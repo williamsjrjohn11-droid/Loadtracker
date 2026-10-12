@@ -2843,6 +2843,44 @@ function previewMatch(ticketNum) {
 
 // Update ONLY the badge + border of one review card — never rebuilds the inputs,
 // so typing is never interrupted and edits are never visually lost.
+// Builds the small status line under the Truck #/Driver fields in ticket review. When a truck
+// has no match on file but the user just picked a driver by hand, this adds a one-tap link to
+// save that truck→driver pairing to the Drivers tab right now, instead of making them go find
+// it in a separate tab later — the fix is right there where the problem showed up.
+function ptkDriverStatusHtml(t, i) {
+  if (t.driver_match_label) return `<span style="color:var(--green);">✨ ${t.driver_match_label}</span>`;
+  if (!t.truck) return `<span style="color:var(--text3);">Truck # auto-matches the driver when set up in the Drivers tab</span>`;
+  let html = `<span style="color:var(--amber);">⚠ No driver on file for this truck</span>`;
+  if (t.driver) {
+    html += ` &nbsp;<a href="#" onclick="rememberTruckDriver(${i});return false;" style="color:var(--green);text-decoration:underline;">💾 Remember ${t.truck} → ${t.driver}</a>`;
+  } else {
+    html += ` <span style="color:var(--amber);">— enter manually or add it to the Drivers tab</span>`;
+  }
+  return html;
+}
+
+// Saves this truck → driver pairing to the Drivers tab (preserving the driver's existing pay
+// rate, pay mode, etc. — only truck_number changes) and immediately applies it to every other
+// pending ticket in this same batch for the same truck, so you only do this once per truck.
+async function rememberTruckDriver(i) {
+  const t = pendingTickets[i];
+  if (!t || !t.truck || !t.driver) return;
+  const existing = (DB.drivers||[]).find(d => d.name === t.driver);
+  if (!existing) { showGlobalAlert('⚠ Could not find that driver in the Drivers tab.', 'err'); return; }
+  const updated = {...existing, truck_number: t.truck};
+  const idx = DB.drivers.findIndex(d => d.name === t.driver);
+  if (idx >= 0) DB.drivers[idx] = updated;
+  pendingTickets.forEach(pt => {
+    if (pt.truck === t.truck && !pt.driver_match_label) {
+      pt.driver = t.driver;
+      pt.driver_match_label = `Truck ${t.truck} → ${t.driver}`;
+    }
+  });
+  renderTicketReview();
+  showGlobalAlert(`✅ Truck ${t.truck} → ${t.driver} saved to the Drivers tab — it'll auto-match from now on`, 'ok');
+  await gasPost({action: 'saveDriver', driver: updated});
+}
+
 function updateReviewBadge(i) {
   const t = pendingTickets[i];
   if (!t) return;
@@ -2939,13 +2977,13 @@ function renderTicketReview() {
             <input style="${inputStyle}" value="${(t.truck||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].truck=this.value.toUpperCase();" placeholder="e.g. AG04">
           </div>
           <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Driver</div>
-            <select style="${inputStyle}" onchange="pendingTickets[${i}].driver=this.value;_lastUsedDriver=this.value;">
+            <select style="${inputStyle}" onchange="pendingTickets[${i}].driver=this.value;_lastUsedDriver=this.value;document.getElementById('ptk-driver-status-${i}').innerHTML=ptkDriverStatusHtml(pendingTickets[${i}], ${i});">
               <option value="">— Select driver —</option>
               ${(DB.drivers||[]).filter(d=>d.active).map(d => `<option value="${d.name.replace(/"/g,'&quot;')}" ${(t.driver||'')===d.name?'selected':''}>${d.name}${d.rate_per_ton?' ($'+d.rate_per_ton.toFixed(2)+'/ton)':''}</option>`).join('')}
             </select>
           </div>
         </div>
-        <div style="font-size:10px;margin-top:2px;color:${t.driver_match_label?'var(--green)':(t.truck?'var(--amber)':'var(--text3)')};">${t.driver_match_label?('✨ '+t.driver_match_label):(t.truck?'⚠ No driver on file for this truck — enter manually or add it to the Drivers tab':'Truck # auto-matches the driver when set up in the Drivers tab')}</div>
+        <div id="ptk-driver-status-${i}" style="font-size:10px;margin-top:2px;">${ptkDriverStatusHtml(t, i)}</div>
       </div>
     </div>`;
   }).join('');
