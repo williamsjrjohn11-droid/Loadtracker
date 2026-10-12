@@ -2614,7 +2614,7 @@ async function processTickets() {
         mt = 'image/jpeg';
       }
       const block = mt.includes('pdf') ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } } : { type: 'image', source: { type: 'base64', media_type: mt, data: b64 } };
-      const text = await callClaude([{ role: 'user', content: [block, { type: 'text', text: 'Extract load ticket data. Return ONLY valid JSON, no markdown. This may be an Amrize-style ticket (has TRUCK NO./PLANT CODE/HAULER fields), a Preferred Materials-style ticket (has Yard/Truck/Driver Delivery Location fields instead — no plant code system), or a Resolve Aggregates-style ticket (has Customer/Order/P.O./Product/Carrier/Location/Vehicle fields — no plant code or Yard system, and critically no delivery address is printed anywhere on the ticket; the job/destination is identified only by the P.O. field, a short code printed BY ITSELF on its own line, e.g. "5203P.005" — note this is separate from the longer Order field just above it, e.g. "RPMx - 5203P Southside Hills Ph.1 (Rockwall)", which is a different, more descriptive field — read P.O. and Order as two separate values, never combine them into one string). Format: {"ticket":"#, from TICKET # in the top right, or Ticket # field, or Ticket No: field","date":"date","pickup":"pickup location — for a Preferred-style ticket, use the Yard name shown top-left, e.g. Grayson County Sand & Gravel — for a Resolve Aggregates-style ticket, use the Location field, e.g. Ravenna 2 - Resolve Aggregates","deliver":"delivery location — for a Preferred-style ticket, use the stamped DRIVER DELIVERY LOCATION text, e.g. MELISSA — for a Resolve Aggregates-style ticket there is NO delivery address printed, so use the P.O. field\'s own short code as a stand-in for the job site, e.g. 5203P.005 (NOT the longer Order field text — just the short P.O. code by itself)","tons":"the NET tons figure specifically (not Gross, not M-Tons/metric tons) — for a ticket with a Tons/Pounds/M-Tons table, use the Net row\'s Tons column","gross_tons":"if the same weight table shows a Gross row, its Tons value — otherwise omit this field entirely","tare_tons":"if the same weight table shows a Tare row, its Tons value — otherwise omit this field entirely","hauler_number":"if shown, the value next to HAULER: on the ticket","truck_number":"if shown, the value next to TRUCK NO. on an Amrize-style ticket specifically","plant_code":"if shown, the code like P4958 next to CUSTOMER: or ZONE: — format is P then 4 digits","origin_hint":"the supplier/yard/plant at top of ticket, e.g. Ambrose Sand & Gravel, Melissa Yard Crushed Stone, Royse City Yard, Grayson County Sand & Gravel, or Ravenna 2 - Resolve Aggregates","supplier_truck_id":"if this is a Preferred-style ticket, the full value next to Truck: near the top, e.g. 04 - AG TRANSPORT — this is the CARRIER\'S own internal truck/driver reference, distinct from TRUCK NO.","po_number":"if this is a Resolve Aggregates-style ticket, the short code printed by itself next to P.O.: on the ticket (NOT the longer Order field above it), e.g. 5203P.005 — otherwise omit this field entirely","order_number":"if this is a Resolve Aggregates-style ticket, the value next to Order: on the ticket — otherwise omit this field entirely","vehicle_id":"if this is a Resolve Aggregates-style ticket, the value next to Vehicle: on the ticket, e.g. 19702_EAE — otherwise omit this field entirely","material":"if shown","time":"if shown, the value next to TIME on the ticket, e.g. 1:59 pm","customer_name":"if shown, the value next to CUSTOMER NAME or Customer: on the ticket, e.g. MCKINNEY READY MIX PLANT or RPM xConstruction, LLC","customer_number":"if shown, the value next to CUSTOMER: on the ticket (may match the zone code)","zone":"if shown, the value next to ZONE: on the ticket","product_code":"if shown, the value next to PRODUCT CODE on the ticket","product":"if shown, the value next to PRODUCT on the ticket, e.g. SG,CONCRETE SAND,#4-#200,W or Concrete Sand"}' }] }], 600);
+      const text = await callClaude([{ role: 'user', content: [block, { type: 'text', text: 'Extract load ticket data. Return ONLY valid JSON, no markdown. This may be an Amrize-style ticket (has TRUCK NO./PLANT CODE/HAULER fields), a Preferred Materials-style ticket (has Yard/Truck/Driver Delivery Location fields instead — no plant code system), or a Resolve Aggregates-style ticket (has Customer/Order/P.O./Product/Carrier/Location/Vehicle fields — no plant code or Yard system, and critically no delivery address is printed anywhere on the ticket; the job/destination is identified only by the P.O. field, a short code printed BY ITSELF on its own line, e.g. "5203P.005" — note this is separate from the longer Order field just above it, e.g. "RPMx - 5203P Southside Hills Ph.1 (Rockwall)", which is a different, more descriptive field — read P.O. and Order as two separate values, never combine them into one string). Format: {"ticket":"#, from TICKET # in the top right, or Ticket # field, or Ticket No: field","date":"date","pickup":"pickup location — for a Preferred-style ticket, use the Yard name shown top-left, e.g. Grayson County Sand & Gravel — for a Resolve Aggregates-style ticket, use the Location field, e.g. Ravenna 2 - Resolve Aggregates","deliver":"delivery location — for a Preferred-style ticket, use the stamped DRIVER DELIVERY LOCATION text, e.g. MELISSA — for a Resolve Aggregates-style ticket there is NO delivery address printed, so use the P.O. field\'s own short code as a stand-in for the job site, e.g. 5203P.005 (NOT the longer Order field text — just the short P.O. code by itself)","tons":"the NET tons figure specifically (not Gross, not M-Tons/metric tons) — for a ticket with a Tons/Pounds/M-Tons table, use the Net row\'s Tons column","gross_tons":"if the same weight table shows a Gross row, its Tons value — otherwise omit this field entirely","tare_tons":"if the same weight table shows a Tare row, its Tons value — otherwise omit this field entirely","hauler_number":"if shown, the value next to HAULER: on the ticket","truck_number":"if shown, the value next to TRUCK NO. on an Amrize-style ticket specifically","plant_code":"if shown, the code like P4958 next to CUSTOMER: or ZONE: — format is P then 4 digits","origin_hint":"the supplier/yard/plant at top of ticket, e.g. Ambrose Sand & Gravel, Melissa Yard Crushed Stone, Royse City Yard, Grayson County Sand & Gravel, or Ravenna 2 - Resolve Aggregates","supplier_truck_id":"if this is a Preferred-style ticket, the full value next to Truck: near the top, e.g. 04 - AG TRANSPORT — this is the CARRIER\'S own internal truck/driver reference, distinct from TRUCK NO.","po_number":"if this is a Resolve Aggregates-style ticket, the short code printed by itself next to P.O.: on the ticket (NOT the longer Order field above it), e.g. 5203P.005 — otherwise omit this field entirely","order_number":"if this is a Resolve Aggregates-style ticket, the value next to Order: on the ticket — otherwise omit this field entirely","vehicle_id":"if this is a Resolve Aggregates-style ticket, the value next to Vehicle: on the ticket, e.g. 19702_EAE — otherwise omit this field entirely","carrier_name":"if this is a Resolve Aggregates-style ticket, the value next to Carrier: on the ticket, e.g. Earth Angels Express or TOP TIER TRUCKING — read it exactly as printed, do not infer it from the Vehicle field\'s suffix — otherwise omit this field entirely","material":"if shown","time":"if shown, the value next to TIME on the ticket, e.g. 1:59 pm","customer_name":"if shown, the value next to CUSTOMER NAME or Customer: on the ticket, e.g. MCKINNEY READY MIX PLANT or RPM xConstruction, LLC","customer_number":"if shown, the value next to CUSTOMER: on the ticket (may match the zone code)","zone":"if shown, the value next to ZONE: on the ticket","product_code":"if shown, the value next to PRODUCT CODE on the ticket","product":"if shown, the value next to PRODUCT on the ticket, e.g. SG,CONCRETE SAND,#4-#200,W or Concrete Sand"}' }] }], 600);
       const t = JSON.parse(text);
       t.file = f.name;
       // Weight-math safety check — Net should equal Gross minus Tare. If the ticket's
@@ -2644,8 +2644,20 @@ async function processTickets() {
       // doesn't belong there.
       const _hnum = String(t.hauler_number || '').replace(/\s/g, '');
       const _resolveHint = /ravenna|resolve/i.test(String(t.origin_hint || t.pickup || ''));
+      // Resolve's own paperwork sometimes prints our truck's vehicle ID (e.g. "19702_EAE")
+      // on a load that was actually hauled by a DIFFERENT carrier — the printed Carrier:
+      // field is the only thing on the ticket that says so. If it names someone other than
+      // Earth Angels Express, this almost certainly isn't our load even though the P.O./
+      // Ravenna origin and vehicle ID look like one of ours. Axelar is an unrelated sub-haul
+      // business line, not a catch-all for "not sure" — guessing that bucket here would be
+      // just as wrong as guessing EA, so this doesn't tag a business at all. Instead it's
+      // flagged loudly AND left unchecked in the Save column below, same as a duplicate, so
+      // it can never slide through on autopilot — it has to be a deliberate decision.
+      t.carrier_name = String(t.carrier_name || '').trim();
+      t._carrierMismatch = (_resolveHint && t.carrier_name && !/earth\s*angels/i.test(t.carrier_name)) ? t.carrier_name : null;
       if (_hnum === '4011121') t.business = 'ea';
       else if (String(t.supplier_truck_id||'').trim()) t.business = 'ea';
+      else if (t._carrierMismatch) t.business = '';
       else if (String(t.po_number||'').trim() || _resolveHint) t.business = 'ea';
       else t.business = 'axelar';
       // Persist the raw report fields under their storage names (kept separate from
@@ -2898,6 +2910,7 @@ function updateReviewBadge(i) {
   }
   let statusBadge;
   if (t._dup) statusBadge = '<span class="badge badge-amber">duplicate</span>';
+  else if (t._carrierMismatch) statusBadge = '<span class="badge badge-red">⚠ carrier mismatch</span>';
   else if (t._scanError) statusBadge = '<span class="badge badge-red">scan failed</span>';
   else if (t._weightMismatch) statusBadge = `<span class="badge badge-red">⚠ tons don't add up</span>`;
   else if (hasDisc) statusBadge = `<span class="badge badge-red">⚠ tons: paid ${parseFloat(pv.tons).toFixed(2)}</span>`;
@@ -2931,6 +2944,7 @@ function renderTicketReview() {
     const hasDisc = tonsDiff > 0.1;
     let statusBadge;
     if (t._dup) statusBadge = '<span class="badge badge-amber">duplicate</span>';
+    else if (t._carrierMismatch) statusBadge = '<span class="badge badge-red">⚠ carrier mismatch</span>';
     else if (t._scanError) statusBadge = '<span class="badge badge-red">scan failed</span>';
     else if (t._weightMismatch) statusBadge = `<span class="badge badge-red">⚠ tons don't add up</span>`;
     else if (hasDisc) statusBadge = `<span class="badge badge-red">⚠ tons: paid ${parseFloat(pv.tons).toFixed(2)}</span>`;
@@ -2939,16 +2953,22 @@ function renderTicketReview() {
     const photoBtn = t.photo_url ? `<a href="#" onclick="viewPhoto('${t.photo_url}');return false;" style="font-size:14px;text-decoration:none;" title="View photo">📷</a>` : '';
     const inputStyle = 'width:100%;padding:6px 8px;font-size:13px;background:var(--surface);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:\'Barlow\',sans-serif;';
     const weightBanner = `<div id="ptk-wcheck-${i}" style="display:${t._weightMismatch ? 'block' : 'none'};background:rgba(230,57,70,0.1);border:1px solid var(--red);border-radius:8px;padding:8px;margin-bottom:8px;font-size:12px;color:var(--red);">${t._weightMismatch ? `⚠ Tons don't add up — Gross ${(t.gross_tons||0).toFixed(2)} − Tare ${(t.tare_tons||0).toFixed(2)} = ${(t._expectedNet||0).toFixed(2)}, but Net shows ${parseFloat(t.tons||0).toFixed(2)}. Check the ticket photo and fix before saving.` : ''}</div>`;
-    return `<div id="ptk-card-${i}" style="background:var(--surface2);border:1px solid ${t._weightMismatch ? 'var(--red)' : t._dup ? 'var(--amber)' : hasDisc ? 'var(--red)' : pv.matched ? 'var(--green)' : 'var(--border)'};border-radius:10px;padding:10px;margin-bottom:8px;">
+    // Resolve's ticket Carrier: field named someone other than Earth Angels Express on a
+    // ticket that otherwise looks like ours (same P.O./Ravenna origin, even our truck's
+    // vehicle ID) — most likely this load wasn't actually hauled by us. Defaulted to
+    // Axelar below so it won't wrongly skip a broker fee; flagged here so it isn't missed.
+    const carrierBanner = t._carrierMismatch ? `<div style="background:rgba(230,57,70,0.1);border:1px solid var(--red);border-radius:8px;padding:8px;margin-bottom:8px;font-size:12px;color:var(--red);">⚠ Ticket's Carrier field says "<b>${t._carrierMismatch}</b>" — not Earth Angels Express. This may be a different carrier's load, even though the P.O./location and vehicle ID look like one of ours. Verify against the photo before saving.</div>` : '';
+    return `<div id="ptk-card-${i}" style="background:var(--surface2);border:1px solid ${t._carrierMismatch ? 'var(--red)' : t._weightMismatch ? 'var(--red)' : t._dup ? 'var(--amber)' : hasDisc ? 'var(--red)' : pv.matched ? 'var(--green)' : 'var(--border)'};border-radius:10px;padding:10px;margin-bottom:8px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
-          <input type="checkbox" id="ptk-inc-${i}" ${t._dup ? '' : 'checked'} style="width:16px;height:16px;accent-color:var(--green);">
+          <input type="checkbox" id="ptk-inc-${i}" ${(t._dup || t._carrierMismatch) ? '' : 'checked'} style="width:16px;height:16px;accent-color:var(--green);">
           <span style="color:var(--text2);">Save</span>
         </label>
         ${photoBtn}
         <span style="font-size:11px;color:var(--text3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${t.file||''}</span>
         <span id="ptk-badge-${i}">${statusBadge}</span>
       </div>
+      ${carrierBanner}
       ${weightBanner}
       <div style="display:grid;grid-template-columns:1.2fr 1fr 0.7fr;gap:6px;margin-bottom:6px;">
         <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Ticket #</div><input style="${inputStyle}" value="${(t.ticket||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].ticket=this.value;clearTimeout(window._ptkT);window._ptkT=setTimeout(()=>updateReviewBadge(${i}),500);"></div>
@@ -2962,7 +2982,8 @@ function renderTicketReview() {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;">
         <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Business</div>
           <select style="${inputStyle}" onchange="pendingTickets[${i}].business=this.value;document.getElementById('ptk-rate-wrap-${i}').style.display=this.value==='ea'?'block':'none';document.getElementById('ptk-driver-wrap-${i}').style.display=this.value==='ea'?'block':'none';">
-            <option value="axelar" ${(t.business||'axelar')==='axelar'?'selected':''}>Axelar (sub-haul)</option>
+            ${t._carrierMismatch ? `<option value="" disabled ${!t.business?'selected':''}>— Not EA, not Axelar — decide —</option>` : ''}
+            <option value="axelar" ${(t._carrierMismatch ? t.business==='axelar' : (t.business||'axelar')==='axelar')?'selected':''}>Axelar (sub-haul)</option>
             <option value="ea" ${(t.business||'')==='ea'?'selected':''}>EA (direct)</option>
           </select>
         </div>
