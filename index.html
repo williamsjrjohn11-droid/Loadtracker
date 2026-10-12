@@ -5941,7 +5941,17 @@ async function scanResolveJobTicket(file) {
       ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } }
       : { type: 'image', source: { type: 'base64', media_type: mt, data: b64 } };
     const text = await callClaude([{ role: 'user', content: [block, { type: 'text', text: 'This is a Resolve Aggregates-style trucking scale ticket (has Customer/Order/P.O./Product/Carrier/Location/Vehicle fields). The P.O.: field is a short code printed BY ITSELF on its own line (e.g. "5203P.005") — it is separate from the longer Order field just above it (e.g. "RPMx - 5203P Southside Hills Ph.1 (Rockwall)"), which is a different, more descriptive field. Read them as two separate values, never combine them into one string. Return ONLY valid JSON, no markdown: {"po_number":"the short P.O.: code by itself, e.g. 5203P.005","order_text":"the longer Order: field text, e.g. RPMx - 5203P Southside Hills Ph.1 (Rockwall)","location":"the value next to Location: on the ticket, e.g. Ravenna 2 - Resolve Aggregates"}' }] }], 300);
-    const d = JSON.parse(text);
+    // The model occasionally replies with a plain sentence instead of JSON (usually means it
+    // couldn't read the photo clearly — blur, bad angle, glare, or it wasn't a ticket at all).
+    // Pull out just the {...} part if there's text wrapped around it; if there's no JSON object
+    // in the response at all, fail with a clear message instead of a raw parse error.
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      statusEl.textContent = "⚠ Couldn't read that photo clearly — try a straighter, better-lit shot, or enter the P.O. by hand.";
+      statusEl.style.color = 'var(--amber)';
+      return;
+    }
+    const d = JSON.parse(jsonMatch[0]);
     if (!d.po_number) {
       statusEl.textContent = '⚠ Could not find a P.O. field on that ticket — enter it by hand.';
       statusEl.style.color = 'var(--amber)';
