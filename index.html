@@ -3860,7 +3860,9 @@ function renderTickets() {
   if (tFilter === 'axelar') t = t.filter(x => (x.business||'axelar') === 'axelar');
   if (dFilter) t = t.filter(x => x.driver === dFilter);
   if (sFilter) t = t.filter(x => x.settlement_id === sFilter);
-  if (custFilter) t = t.filter(x => ticketCustomerLabel(x) === custFilter);
+  // custFilter is either a specific customer/job-site label, or a bare carrier name picked
+  // via the "— All <carrier> —" option at the top of each optgroup — match either way.
+  if (custFilter) t = t.filter(x => ticketCustomerLabel(x) === custFilter || detectCarrierAndOrigin(x).carrier === custFilter);
   if (dateFromFilter) {
     const from = parseLocalDate(dateFromFilter);
     t = t.filter(x => { const d = parseLocalDate(x.date); return d && from && d >= from; });
@@ -5586,11 +5588,39 @@ function populateSel() {
   // "Customer" here means whoever's printed on the ticket as the customer (Resolve-style
   // tickets print one explicitly); when a ticket has no customer_name field at all, its
   // detected carrier (Amrize, Preferred Materials, etc.) is used as a reasonable stand-in
-  // so this filter stays useful for every ticket, not just Resolve's.
+  // so this filter stays useful for every ticket, not just Resolve's. Amrize prints a
+  // customer_name per JOB SITE though (e.g. "414 Heidelberg Materials"), so a flat list of
+  // every one of those floods the dropdown with dozens of near-duplicates — grouped by
+  // carrier with an optgroup instead, with an "All <carrier>" option at the top of each
+  // group for when you don't care which specific job site, just which carrier.
   const custEl = document.getElementById('f-cust');
   if (custEl) {
-    const custNames = [...new Set((DB.tickets||[]).map(t => ticketCustomerLabel(t)).filter(Boolean))].sort();
-    custEl.innerHTML = '<option value="">All customers</option>' + custNames.map(n => `<option value="${n.replace(/"/g,'&quot;')}">${n}</option>`).join('');
+    const byCarrier = {};
+    (DB.tickets||[]).forEach(t => {
+      const carrier = detectCarrierAndOrigin(t).carrier;
+      const label = ticketCustomerLabel(t);
+      if (!carrier || !label) return;
+      if (!byCarrier[carrier]) byCarrier[carrier] = new Set();
+      if (label !== carrier) byCarrier[carrier].add(label); // skip adding the carrier as its own child
+    });
+    const priority = ['Amrize', 'Preferred Materials', 'Resolve Aggregates'];
+    const carriers = Object.keys(byCarrier).sort((a, b) => {
+      const pa = priority.indexOf(a), pb = priority.indexOf(b);
+      if (pa !== -1 || pb !== -1) return (pa === -1 ? 99 : pa) - (pb === -1 ? 99 : pb);
+      if (a === 'Other / Unmatched') return 1;
+      if (b === 'Other / Unmatched') return -1;
+      return a.localeCompare(b);
+    });
+    const esc = s => String(s).replace(/"/g,'&quot;');
+    let html = '<option value="">All customers</option>';
+    carriers.forEach(carrier => {
+      const children = [...byCarrier[carrier]].sort();
+      html += `<optgroup label="${esc(carrier)}">`;
+      html += `<option value="${esc(carrier)}">— All ${esc(carrier)} —</option>`;
+      html += children.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+      html += `</optgroup>`;
+    });
+    custEl.innerHTML = html;
   }
 }
 
