@@ -251,9 +251,7 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
   .container{padding:16px 12px;}
   .nav-right .btn-sm span{display:none;}
   #payout-fee-fsc-row{grid-template-columns:1fr !important;}
-  #payout-bonus-fields{grid-template-columns:1fr !important;}
   #payout-modal-box{padding:14px;}
-  #salary-bonus-fields{grid-template-columns:1fr !important;}
   #salary-modal-box{padding:14px;}
   #owner-draw-modal-box{padding:14px;}
   #merge-modal-box{padding:14px;}
@@ -4695,6 +4693,7 @@ function generateDriverPayout(driverName) {
   document.getElementById('payout-bonus-toggle').checked = false;
   document.getElementById('payout-bonus-amt').value = 0;
   document.getElementById('payout-bonus-note').value = '';
+  bonusRowsFromHidden('payout');
   document.getElementById('payout-bonus-fields').style.display = 'none';
   document.getElementById('payout-misc-toggle').checked = false;
   document.getElementById('payout-misc-amt').value = 0;
@@ -4758,7 +4757,8 @@ function editDriverPayout(id) {
   document.getElementById('payout-bonus-toggle').checked = hasBonus;
   document.getElementById('payout-bonus-amt').value = ds.bonus_amount || 0;
   document.getElementById('payout-bonus-note').value = ds.bonus_note || '';
-  document.getElementById('payout-bonus-fields').style.display = hasBonus ? 'grid' : 'none';
+  bonusRowsFromHidden('payout');
+  document.getElementById('payout-bonus-fields').style.display = hasBonus ? 'block' : 'none';
   const hasMisc = !!(ds.misc_deduction_amount && parseFloat(ds.misc_deduction_amount) !== 0);
   document.getElementById('payout-misc-toggle').checked = hasMisc;
   document.getElementById('payout-misc-amt').value = ds.misc_deduction_amount || 0;
@@ -4879,6 +4879,7 @@ function generateSalaryPayout(driverName) {
   document.getElementById('salary-bonus-toggle').checked = false;
   document.getElementById('salary-bonus-amt').value = 0;
   document.getElementById('salary-bonus-note').value = '';
+  bonusRowsFromHidden('salary');
   document.getElementById('salary-bonus-fields').style.display = 'none';
   document.getElementById('salary-misc-toggle').checked = false;
   document.getElementById('salary-misc-amt').value = 0;
@@ -4907,7 +4908,8 @@ function editSalaryPayout(id) {
   document.getElementById('salary-bonus-toggle').checked = hasBonus;
   document.getElementById('salary-bonus-amt').value = ds.bonus_amount || 0;
   document.getElementById('salary-bonus-note').value = ds.bonus_note || '';
-  document.getElementById('salary-bonus-fields').style.display = hasBonus ? 'grid' : 'none';
+  bonusRowsFromHidden('salary');
+  document.getElementById('salary-bonus-fields').style.display = hasBonus ? 'block' : 'none';
   const hasMisc = !!(ds.misc_deduction_amount && parseFloat(ds.misc_deduction_amount) !== 0);
   document.getElementById('salary-misc-toggle').checked = hasMisc;
   document.getElementById('salary-misc-amt').value = ds.misc_deduction_amount || 0;
@@ -4939,6 +4941,7 @@ function convertSettlementToSalary(id) {
   document.getElementById('salary-bonus-toggle').checked = false;
   document.getElementById('salary-bonus-amt').value = 0;
   document.getElementById('salary-bonus-note').value = '';
+  bonusRowsFromHidden('salary');
   document.getElementById('salary-bonus-fields').style.display = 'none';
   document.getElementById('salary-misc-toggle').checked = false;
   document.getElementById('salary-misc-amt').value = 0;
@@ -5059,6 +5062,7 @@ function confirmMergeSelection() {
   document.getElementById('salary-bonus-toggle').checked = false;
   document.getElementById('salary-bonus-amt').value = 0;
   document.getElementById('salary-bonus-note').value = '';
+  bonusRowsFromHidden('salary');
   document.getElementById('salary-bonus-fields').style.display = 'none';
   document.getElementById('salary-misc-toggle').checked = false;
   document.getElementById('salary-misc-amt').value = 0;
@@ -5071,8 +5075,9 @@ function confirmMergeSelection() {
 
 function toggleSalaryBonusFields() {
   const on = document.getElementById('salary-bonus-toggle').checked;
-  document.getElementById('salary-bonus-fields').style.display = on ? 'grid' : 'none';
+  document.getElementById('salary-bonus-fields').style.display = on ? 'block' : 'none';
   if (!on) { document.getElementById('salary-bonus-amt').value = 0; document.getElementById('salary-bonus-note').value = ''; }
+  bonusRowsFromHidden('salary');
   updateSalaryTotal();
 }
 
@@ -5285,21 +5290,75 @@ async function confirmSalaryPayout() {
   printDriverSettlement(ds.id);
 }
 
+// ---- Multiple bonus line items (stored as JSON in bonus_note; bonus_amount = sum) ----
+function parseBonusItems(note, amt) {
+  const a = parseFloat(amt) || 0;
+  const t = String(note || '').trim();
+  if (t.charAt(0) === '[') {
+    try {
+      const arr = JSON.parse(t);
+      if (Array.isArray(arr)) return arr.map(x => ({ note: String(x.note || ''), amt: parseFloat(x.amt) || 0 })).filter(x => x.amt || x.note);
+    } catch (e) {}
+  }
+  return (a || t) ? [{ note: t, amt: a }] : [];
+}
+function bonusRowsHtml(ds, bonusAmt, fmt) {
+  const items = parseBonusItems(ds.bonus_note, ds.bonus_amount);
+  if (!items.length) return '';
+  return items.map(it => `<div class="math-row"><span>Bonus${it.note ? ' (' + String(it.note).replace(/</g,'&lt;') + ')' : ''}</span><span>+${fmt(it.amt)}</span></div>`).join('');
+}
+function bonusRowHtml(p, note, amt) {
+  const esc = v => String(v == null ? '' : v).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+  return `<div class="bonus-row" style="display:grid;grid-template-columns:90px 1fr 32px;gap:8px;margin-bottom:6px;align-items:center;">
+    <input type="number" step="0.01" class="bonus-row-amt" value="${esc(amt)}" placeholder="$ 0.00" oninput="bonusRowsSync('${p}')">
+    <input type="text" class="bonus-row-note" value="${esc(note)}" placeholder="e.g. Safety bonus, holiday bonus..." oninput="bonusRowsSync('${p}')">
+    <button type="button" class="btn" style="padding:4px 0;font-size:14px;" onclick="removeBonusRow('${p}', this)" title="Remove">✕</button>
+  </div>`;
+}
+function bonusRowsFromHidden(p) {
+  const box = document.getElementById(p + '-bonus-rows');
+  if (!box) return;
+  const items = parseBonusItems(document.getElementById(p + '-bonus-note').value, document.getElementById(p + '-bonus-amt').value);
+  if (!items.length) items.push({ note: '', amt: '' });
+  box.innerHTML = items.map(it => bonusRowHtml(p, it.note, it.amt || '')).join('');
+}
+function addBonusRow(p) {
+  document.getElementById(p + '-bonus-rows').insertAdjacentHTML('beforeend', bonusRowHtml(p, '', ''));
+  const rows = document.querySelectorAll('#' + p + '-bonus-rows .bonus-row-amt');
+  if (rows.length) rows[rows.length - 1].focus();
+}
+function removeBonusRow(p, btn) {
+  btn.closest('.bonus-row').remove();
+  if (!document.querySelector('#' + p + '-bonus-rows .bonus-row')) addBonusRow(p);
+  bonusRowsSync(p);
+}
+function bonusRowsSync(p) {
+  const items = [...document.querySelectorAll('#' + p + '-bonus-rows .bonus-row')].map(r => ({
+    note: r.querySelector('.bonus-row-note').value.trim(),
+    amt: parseFloat(r.querySelector('.bonus-row-amt').value) || 0
+  })).filter(x => x.amt || x.note);
+  const sum = Math.round(items.reduce((a, x) => a + x.amt, 0) * 100) / 100;
+  document.getElementById(p + '-bonus-amt').value = sum;
+  document.getElementById(p + '-bonus-note').value = items.length ? JSON.stringify(items) : '';
+  if (p === 'payout') updatePayoutTotal(); else updateSalaryTotal();
+}
+
 function toggleBonusFields() {
   const on = document.getElementById('payout-bonus-toggle').checked;
   const fields = document.getElementById('payout-bonus-fields');
-  fields.style.display = on ? 'grid' : 'none';
+  fields.style.display = on ? 'block' : 'none';
   if (!on) {
     document.getElementById('payout-bonus-amt').value = 0;
     document.getElementById('payout-bonus-note').value = '';
   }
+  bonusRowsFromHidden('payout');
   updatePayoutTotal();
 }
 
 function toggleMiscFields() {
   const on = document.getElementById('payout-misc-toggle').checked;
   const fields = document.getElementById('payout-misc-fields');
-  fields.style.display = on ? 'grid' : 'none';
+  fields.style.display = on ? 'block' : 'none';
   if (!on) {
     document.getElementById('payout-misc-amt').value = 0;
     document.getElementById('payout-misc-note').value = '';
@@ -6786,7 +6845,7 @@ ${rows.map((t,i) => {
   ${hasHistoricalLoads ? `<div class="math-row"><span>Gross (from loads)</span><span>${fmt(grossFromLoads)}</span></div>
   <div class="math-row"><span>Total FSC (reference only — not added to salary)</span><span>${fmt(fscAmt)}</span></div>` : ''}
   <div class="math-row${hasHistoricalLoads ? ' total' : ''}"><span>Driver Pay (Net) — Weekly Salary</span><span>${fmt(salaryBase)}</span></div>
-  ${bonusAmt ? `<div class="math-row"><span>Bonus${ds.bonus_note?` (${ds.bonus_note})`:''}</span><span>+${fmt(bonusAmt)}</span></div>` : ''}
+  ${bonusAmt ? bonusRowsHtml(ds, bonusAmt, fmt) : ''}
   ${miscAmt ? `<div class="math-row" style="color:#b91c1c;"><span>Other / Deduction${ds.misc_deduction_note?` (${ds.misc_deduction_note})`:''}</span><span>-${fmt(miscAmt)}</span></div>` : ''}
   <div class="math-row final"><span>AMOUNT OWED</span><span>${fmt(amountOwed)}</span></div>
   <div class="math-row" style="border-top:1px solid #e5e7eb;margin-top:6px;padding-top:8px;"><span>${new Date().getFullYear()} YTD (${ds.driver})</span><span>${fmt(ytd)}</span></div>
@@ -6796,7 +6855,7 @@ ${rows.map((t,i) => {
   <div class="math-row"><span>Broker Fee${feePct?` (${feePct}%)`:''}</span><span>-${fmt(feeAmt)}</span></div>
   <div class="math-row total"><span>Net (before FSC)</span><span>${fmt(afterFee)}</span></div>
   <div class="math-row"><span>FSC (full, no fee taken)</span><span>+${fmt(fscAmt)}</span></div>`}
-  ${bonusAmt ? `<div class="math-row"><span>Bonus${ds.bonus_note?` (${ds.bonus_note})`:''}</span><span>+${fmt(bonusAmt)}</span></div>` : ''}
+  ${bonusAmt ? bonusRowsHtml(ds, bonusAmt, fmt) : ''}
   ${miscAmt ? `<div class="math-row" style="color:#b91c1c;"><span>Other / Deduction${ds.misc_deduction_note?` (${ds.misc_deduction_note})`:''}</span><span>-${fmt(miscAmt)}</span></div>` : ''}
   <div class="math-row final"><span>AMOUNT OWED</span><span>${fmt(amountOwed)}</span></div>
   <div class="math-row" style="border-top:1px solid #e5e7eb;margin-top:6px;padding-top:8px;"><span>${new Date().getFullYear()} YTD (${ds.driver})</span><span>${fmt(ytd)}</span></div>
@@ -8149,39 +8208,12 @@ if ('serviceWorker' in navigator) {
       <input type="checkbox" id="payout-bonus-toggle" onchange="toggleBonusFields()" style="width:16px;height:16px;accent-color:var(--green);">
       <label for="payout-bonus-toggle" style="font-size:13px;font-weight:600;cursor:pointer;">Include a bonus</label>
     </div>
-    <div id="payout-bonus-fields" style="display:none;grid-template-columns:1fr 2fr;gap:10px;margin:8px 0 10px;">
-      <div class="invoice-field" style="margin-bottom:0;">
-        <label>Bonus $</label>
-        <input type="number" step="0.01" id="payout-bonus-amt" value="0" placeholder="0.00" oninput="updatePayoutTotal()">
-      </div>
-      <div class="invoice-field" style="margin-bottom:0;">
-        <label>Bonus note (shows on settlement)</label>
-        <input type="text" id="payout-bonus-note" placeholder="e.g. Safety bonus, holiday bonus...">
-      </div>
+    <div id="payout-bonus-fields" style="display:none;margin:8px 0 10px;">
+      <div id="payout-bonus-rows"></div>
+      <button type="button" class="btn" style="margin-top:6px;font-size:12px;padding:6px 10px;" onclick="addBonusRow('payout')">+ Add another bonus</button>
+      <input type="hidden" id="payout-bonus-amt" value="0">
+      <input type="hidden" id="payout-bonus-note" value="">
     </div>
-    <div style="display:flex;align-items:center;gap:8px;margin:10px 0 0;">
-      <input type="checkbox" id="payout-misc-toggle" onchange="toggleMiscFields()" style="width:16px;height:16px;accent-color:var(--red);">
-      <label for="payout-misc-toggle" style="font-size:13px;font-weight:600;cursor:pointer;">Other / deduction</label>
-    </div>
-    <div id="payout-misc-fields" style="display:none;grid-template-columns:1fr 2fr;gap:10px;margin:8px 0 10px;">
-      <div class="invoice-field" style="margin-bottom:0;">
-        <label>Amount $ (enter as a positive number — it's subtracted)</label>
-        <input type="number" step="0.01" min="0" id="payout-misc-amt" value="0" placeholder="0.00" oninput="updatePayoutTotal()">
-      </div>
-      <div class="invoice-field" style="margin-bottom:0;">
-        <label>Reason (shows on settlement)</label>
-        <input type="text" id="payout-misc-note" placeholder="e.g. Insurance repayment, advance repayment...">
-      </div>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:10px;">
-      <div><div id="payout-modal-total">$0.00</div><div style="font-size:11px;color:var(--text3);">total for checked loads</div></div>
-      <div id="payout-modal-actions">
-        <button class="btn" onclick="closePayoutModal()">Cancel</button>
-        <button class="btn" style="background:var(--surface2);border:1px solid var(--border2);" onclick="previewDriverSettlementDoc()">👁 Preview</button>
-        <button class="btn btn-green" id="payout-generate-btn" onclick="confirmDriverPayout()">✅ Generate Payout</button>
-      </div>
-    </div>
-  </div>
 </div>
 
 <div id="salary-modal">
@@ -8208,39 +8240,12 @@ if ('serviceWorker' in navigator) {
       <input type="checkbox" id="salary-bonus-toggle" onchange="toggleSalaryBonusFields()" style="width:16px;height:16px;accent-color:var(--green);">
       <label for="salary-bonus-toggle" style="font-size:13px;font-weight:600;cursor:pointer;">Include a bonus</label>
     </div>
-    <div id="salary-bonus-fields" style="display:none;grid-template-columns:1fr 2fr;gap:10px;margin:8px 0 10px;">
-      <div class="invoice-field" style="margin-bottom:0;">
-        <label>Bonus $</label>
-        <input type="number" step="0.01" id="salary-bonus-amt" value="0" placeholder="0.00" oninput="updateSalaryTotal()">
-      </div>
-      <div class="invoice-field" style="margin-bottom:0;">
-        <label>Bonus note (shows on settlement)</label>
-        <input type="text" id="salary-bonus-note" placeholder="e.g. Holiday bonus...">
-      </div>
+    <div id="salary-bonus-fields" style="display:none;margin:8px 0 10px;">
+      <div id="salary-bonus-rows"></div>
+      <button type="button" class="btn" style="margin-top:6px;font-size:12px;padding:6px 10px;" onclick="addBonusRow('salary')">+ Add another bonus</button>
+      <input type="hidden" id="salary-bonus-amt" value="0">
+      <input type="hidden" id="salary-bonus-note" value="">
     </div>
-    <div style="display:flex;align-items:center;gap:8px;margin:10px 0 0;">
-      <input type="checkbox" id="salary-misc-toggle" onchange="toggleSalaryMiscFields()" style="width:16px;height:16px;accent-color:var(--red);">
-      <label for="salary-misc-toggle" style="font-size:13px;font-weight:600;cursor:pointer;">Other / deduction</label>
-    </div>
-    <div id="salary-misc-fields" style="display:none;grid-template-columns:1fr 2fr;gap:10px;margin:8px 0 10px;">
-      <div class="invoice-field" style="margin-bottom:0;">
-        <label>Amount $ (enter as a positive number — it's subtracted)</label>
-        <input type="number" step="0.01" min="0" id="salary-misc-amt" value="0" placeholder="0.00" oninput="updateSalaryTotal()">
-      </div>
-      <div class="invoice-field" style="margin-bottom:0;">
-        <label>Reason (shows on settlement)</label>
-        <input type="text" id="salary-misc-note" placeholder="e.g. Insurance repayment, advance repayment...">
-      </div>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:10px;">
-      <div><div id="salary-modal-total">$0.00</div><div style="font-size:11px;color:var(--text3);">total for this payout</div></div>
-      <div id="payout-modal-actions">
-        <button class="btn" onclick="cancelSalaryModal()">Cancel</button>
-        <button class="btn" style="background:var(--surface2);border:1px solid var(--border2);" onclick="previewSalaryPayout()">👁 Preview</button>
-        <button class="btn btn-green" id="salary-generate-btn" onclick="confirmSalaryPayout()">✅ Generate Payout</button>
-      </div>
-    </div>
-  </div>
 </div>
 
 <div id="merge-modal">
