@@ -8214,6 +8214,29 @@ if ('serviceWorker' in navigator) {
       <input type="hidden" id="payout-bonus-amt" value="0">
       <input type="hidden" id="payout-bonus-note" value="">
     </div>
+    <div style="display:flex;align-items:center;gap:8px;margin:10px 0 0;">
+      <input type="checkbox" id="payout-misc-toggle" onchange="toggleMiscFields()" style="width:16px;height:16px;accent-color:var(--red);">
+      <label for="payout-misc-toggle" style="font-size:13px;font-weight:600;cursor:pointer;">Other / deduction</label>
+    </div>
+    <div id="payout-misc-fields" style="display:none;grid-template-columns:1fr 2fr;gap:10px;margin:8px 0 10px;">
+      <div class="invoice-field" style="margin-bottom:0;">
+        <label>Amount $ (enter as a positive number — it's subtracted)</label>
+        <input type="number" step="0.01" min="0" id="payout-misc-amt" value="0" placeholder="0.00" oninput="updatePayoutTotal()">
+      </div>
+      <div class="invoice-field" style="margin-bottom:0;">
+        <label>Reason (shows on settlement)</label>
+        <input type="text" id="payout-misc-note" placeholder="e.g. Insurance repayment, advance repayment...">
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div><div id="payout-modal-total">$0.00</div><div style="font-size:11px;color:var(--text3);">total for checked loads</div></div>
+      <div id="payout-modal-actions">
+        <button class="btn" onclick="closePayoutModal()">Cancel</button>
+        <button class="btn" style="background:var(--surface2);border:1px solid var(--border2);" onclick="previewDriverSettlementDoc()">👁 Preview</button>
+        <button class="btn btn-green" id="payout-generate-btn" onclick="confirmDriverPayout()">✅ Generate Payout</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div id="salary-modal">
@@ -8246,6 +8269,29 @@ if ('serviceWorker' in navigator) {
       <input type="hidden" id="salary-bonus-amt" value="0">
       <input type="hidden" id="salary-bonus-note" value="">
     </div>
+    <div style="display:flex;align-items:center;gap:8px;margin:10px 0 0;">
+      <input type="checkbox" id="salary-misc-toggle" onchange="toggleSalaryMiscFields()" style="width:16px;height:16px;accent-color:var(--red);">
+      <label for="salary-misc-toggle" style="font-size:13px;font-weight:600;cursor:pointer;">Other / deduction</label>
+    </div>
+    <div id="salary-misc-fields" style="display:none;grid-template-columns:1fr 2fr;gap:10px;margin:8px 0 10px;">
+      <div class="invoice-field" style="margin-bottom:0;">
+        <label>Amount $ (enter as a positive number — it's subtracted)</label>
+        <input type="number" step="0.01" min="0" id="salary-misc-amt" value="0" placeholder="0.00" oninput="updateSalaryTotal()">
+      </div>
+      <div class="invoice-field" style="margin-bottom:0;">
+        <label>Reason (shows on settlement)</label>
+        <input type="text" id="salary-misc-note" placeholder="e.g. Insurance repayment, advance repayment...">
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div><div id="salary-modal-total">$0.00</div><div style="font-size:11px;color:var(--text3);">total for this payout</div></div>
+      <div id="payout-modal-actions">
+        <button class="btn" onclick="cancelSalaryModal()">Cancel</button>
+        <button class="btn" style="background:var(--surface2);border:1px solid var(--border2);" onclick="previewSalaryPayout()">👁 Preview</button>
+        <button class="btn btn-green" id="salary-generate-btn" onclick="confirmSalaryPayout()">✅ Generate Payout</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div id="merge-modal">
