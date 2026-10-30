@@ -2627,20 +2627,37 @@ async function processTickets() {
         mt = 'image/jpeg';
       }
       const block = mt.includes('pdf') ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } } : { type: 'image', source: { type: 'base64', media_type: mt, data: b64 } };
-      const text = await callClaude([{ role: 'user', content: [block, { type: 'text', text: 'Extract load ticket data. Return ONLY valid JSON, no markdown. This may be an Amrize-style ticket (has TRUCK NO./PLANT CODE/HAULER fields), a Preferred Materials-style ticket (has Yard/Truck/Driver Delivery Location fields instead — no plant code system), or a Resolve Aggregates-style ticket (has Customer/Order/P.O./Product/Carrier/Location/Vehicle fields — no plant code or Yard system, and critically no delivery address is printed anywhere on the ticket; the job/destination is identified only by the P.O. field, a short code printed BY ITSELF on its own line, e.g. "5203P.005" — note this is separate from the longer Order field just above it, e.g. "RPMx - 5203P Southside Hills Ph.1 (Rockwall)", which is a different, more descriptive field — read P.O. and Order as two separate values, never combine them into one string). Format: {"ticket":"#, from TICKET # in the top right, or Ticket # field, or Ticket No: field","date":"date","pickup":"pickup location — for a Preferred-style ticket, use the Yard name shown top-left, e.g. Grayson County Sand & Gravel — for a Resolve Aggregates-style ticket, use the Location field, e.g. Ravenna 2 - Resolve Aggregates","deliver":"delivery location — for a Preferred-style ticket, use the stamped DRIVER DELIVERY LOCATION text, e.g. MELISSA — for a Resolve Aggregates-style ticket there is NO delivery address printed, so use the P.O. field\'s own short code as a stand-in for the job site, e.g. 5203P.005 (NOT the longer Order field text — just the short P.O. code by itself)","tons":"the NET tons figure specifically (not Gross, not M-Tons/metric tons) — for a ticket with a Tons/Pounds/M-Tons table, use the Net row\'s Tons column","gross_tons":"if the same weight table shows a Gross row, its Tons value — otherwise omit this field entirely","tare_tons":"if the same weight table shows a Tare row, its Tons value — otherwise omit this field entirely","hauler_number":"if shown, the value next to HAULER: on the ticket","truck_number":"if shown, the value next to TRUCK NO. on an Amrize-style ticket specifically","plant_code":"if shown, the code like P4958 next to CUSTOMER: or ZONE: — format is P then 4 digits","origin_hint":"the supplier/yard/plant at top of ticket, e.g. Ambrose Sand & Gravel, Melissa Yard Crushed Stone, Royse City Yard, Grayson County Sand & Gravel, or Ravenna 2 - Resolve Aggregates","supplier_truck_id":"if this is a Preferred-style ticket, the full value next to Truck: near the top, e.g. 04 - AG TRANSPORT — this is the CARRIER\'S own internal truck/driver reference, distinct from TRUCK NO.","po_number":"if this is a Resolve Aggregates-style ticket, the short code printed by itself next to P.O.: on the ticket (NOT the longer Order field above it), e.g. 5203P.005 — otherwise omit this field entirely","order_number":"if this is a Resolve Aggregates-style ticket, the value next to Order: on the ticket — otherwise omit this field entirely","vehicle_id":"if this is a Resolve Aggregates-style ticket, the value next to Vehicle: on the ticket, e.g. 19702_EAE — otherwise omit this field entirely","carrier_name":"if this is a Resolve Aggregates-style ticket, the value next to Carrier: on the ticket, e.g. Earth Angels Express or TOP TIER TRUCKING — read it exactly as printed, do not infer it from the Vehicle field\'s suffix — otherwise omit this field entirely","material":"if shown","time":"if shown, the value next to TIME on the ticket, e.g. 1:59 pm","customer_name":"if shown, the value next to CUSTOMER NAME or Customer: on the ticket, e.g. MCKINNEY READY MIX PLANT or RPM xConstruction, LLC","customer_number":"if shown, the value next to CUSTOMER: on the ticket (may match the zone code)","zone":"if shown, the value next to ZONE: on the ticket","product_code":"if shown, the value next to PRODUCT CODE on the ticket","product":"if shown, the value next to PRODUCT on the ticket, e.g. SG,CONCRETE SAND,#4-#200,W or Concrete Sand"}' }] }], 600);
+      const text = await callClaude([{ role: 'user', content: [block, { type: 'text', text: 'Extract load ticket data. Return ONLY valid JSON, no markdown. This may be an Amrize-style ticket (has TRUCK NO./PLANT CODE/HAULER fields), a Preferred Materials-style ticket (has Yard/Truck/Driver Delivery Location fields instead — no plant code system), or a Lattimore Materials Co. (LMC)-style ticket (yellow carbon ticket, logo LMC top-left, a NO: ticket number top-right, fields Customer #:, Contract #:, Truck #:, Product:, Gross Lbs., Tare Lbs., Net Lbs., Net Tons — nearly everything except the printed labels is HANDWRITTEN, so read the handwriting carefully; the weights are written in POUNDS like 79,560 and may sit slightly below or beside their printed label, so match them by arithmetic: Gross minus Tare must equal Net; the "Total Tons Per Day" figure is only a handwritten tons number for this load, and is NOT a separate daily total), or a Resolve Aggregates-style ticket (has Customer/Order/P.O./Product/Carrier/Location/Vehicle fields — no plant code or Yard system, and critically no delivery address is printed anywhere on the ticket; the job/destination is identified only by the P.O. field, a short code printed BY ITSELF on its own line, e.g. "5203P.005" — note this is separate from the longer Order field just above it, e.g. "RPMx - 5203P Southside Hills Ph.1 (Rockwall)", which is a different, more descriptive field — read P.O. and Order as two separate values, never combine them into one string). Format: {"ticket":"#, from TICKET # in the top right, or Ticket # field, or Ticket No: field","date":"date","pickup":"pickup location — for a Preferred-style ticket, use the Yard name shown top-left, e.g. Grayson County Sand & Gravel — for a Resolve Aggregates-style ticket, use the Location field, e.g. Ravenna 2 - Resolve Aggregates","deliver":"delivery location — for a Preferred-style ticket, use the stamped DRIVER DELIVERY LOCATION text, e.g. MELISSA — for a Lattimore-style ticket use the handwritten Customer #: name, e.g. Pavecon Public Works (ignore the printed P/U text) — for a Resolve Aggregates-style ticket there is NO delivery address printed, so use the P.O. field\'s own short code as a stand-in for the job site, e.g. 5203P.005 (NOT the longer Order field text — just the short P.O. code by itself)","tons":"the NET tons figure specifically (not Gross, not M-Tons/metric tons) — for a ticket with a Tons/Pounds/M-Tons table, use the Net row\'s Tons column","gross_tons":"if the same weight table shows a Gross row, its Tons value — otherwise omit this field entirely","tare_tons":"if the same weight table shows a Tare row, its Tons value — otherwise omit this field entirely","hauler_number":"if shown, the value next to HAULER: on the ticket","truck_number":"if shown, the value next to TRUCK NO. on an Amrize-style ticket specifically — or, on a Lattimore-style ticket, the handwritten value next to Truck #: (e.g. AG04), with no spaces","plant_code":"if shown, the code like P4958 next to CUSTOMER: or ZONE: — format is P then 4 digits","origin_hint":"the supplier/yard/plant at top of ticket (for an LMC ticket: Lattimore Materials Co. (LMC)), e.g. Ambrose Sand & Gravel, Melissa Yard Crushed Stone, Royse City Yard, Grayson County Sand & Gravel, or Ravenna 2 - Resolve Aggregates","supplier_truck_id":"if this is a Preferred-style ticket, the full value next to Truck: near the top, e.g. 04 - AG TRANSPORT — this is the CARRIER\'S own internal truck/driver reference, distinct from TRUCK NO.","po_number":"if this is a Resolve Aggregates-style ticket, the short code printed by itself next to P.O.: on the ticket (NOT the longer Order field above it), e.g. 5203P.005 — otherwise omit this field entirely","order_number":"if this is a Resolve Aggregates-style ticket, the value next to Order: on the ticket — otherwise omit this field entirely","vehicle_id":"if this is a Resolve Aggregates-style ticket, the value next to Vehicle: on the ticket, e.g. 19702_EAE — otherwise omit this field entirely","carrier_name":"if this is a Resolve Aggregates-style ticket, the value next to Carrier: on the ticket, e.g. Earth Angels Express or TOP TIER TRUCKING — read it exactly as printed, do not infer it from the Vehicle field\'s suffix — otherwise omit this field entirely","gross_lbs":"Lattimore-style only: handwritten Gross pounds as a plain number, e.g. 79560 — otherwise omit","tare_lbs":"Lattimore-style only: handwritten Tare pounds as a plain number, e.g. 33340 — otherwise omit","net_lbs":"Lattimore-style only: handwritten Net pounds as a plain number, e.g. 46220 (if Net Lbs is blank but a number sits beside Net, Tons that is clearly pounds, use it) — otherwise omit","tons_written":"Lattimore-style only: the handwritten tons figure like 23.11 if present (near Net Tons / Load # / Total Tons Per Day) — otherwise omit","contract_number":"Lattimore-style only: the handwritten value next to Contract #:, e.g. 401083434 — otherwise omit","material":"if shown","time":"if shown, the value next to TIME on the ticket, e.g. 1:59 pm","customer_name":"if shown, the value next to CUSTOMER NAME or Customer: on the ticket, e.g. MCKINNEY READY MIX PLANT or RPM xConstruction, LLC","customer_number":"if shown, the value next to CUSTOMER: on the ticket (may match the zone code)","zone":"if shown, the value next to ZONE: on the ticket","product_code":"if shown, the value next to PRODUCT CODE on the ticket","product":"if shown, the value next to PRODUCT on the ticket, e.g. SG,CONCRETE SAND,#4-#200,W or Concrete Sand"}' }] }], 600);
       const t = JSON.parse(text);
       t.file = f.name;
       // Weight-math safety check — Net should equal Gross minus Tare. If the ticket's
       // scale table showed all three, verify the math instead of trusting the single
       // "tons" (Net) value blindly. Catches the AI (or a person) grabbing the wrong row
       // from a Gross/Tare/Net table, which otherwise silently pays or records the wrong tons.
+      // Lattimore-style tickets are handwritten in POUNDS. Tons = Net lbs / 2000, computed here in
+      // code (never trusting the handwritten tons figure), and cross-checked against Gross - Tare
+      // and the written tons so a misread digit gets flagged instead of silently paid.
+      {
+        const num = v => { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.]/g, '')); return isNaN(n) ? null : n; };
+        const gl = num(t.gross_lbs), tl = num(t.tare_lbs);
+        let nl = num(t.net_lbs);
+        if (gl && tl && !nl) nl = gl - tl;
+        if (nl && nl > 1000) {
+          t.tons = Math.round(nl / 2000 * 100) / 100;
+          if (gl && tl) { t.gross_tons = Math.round(gl / 2000 * 100) / 100; t.tare_tons = Math.round(tl / 2000 * 100) / 100; }
+          t._lbsNote = `${nl.toLocaleString()} lb net ÷ 2000`;
+          const tw = num(t.tons_written);
+          t._lbsMismatch = !!((gl && tl && Math.abs((gl - tl) - nl) > 40) || (tw && Math.abs(tw - t.tons) > 0.05));
+        }
+        if (!t.po_number && t.contract_number) t.po_number = String(t.contract_number).trim();
+      }
       t.gross_tons = t.gross_tons !== undefined && t.gross_tons !== null && t.gross_tons !== '' ? parseFloat(t.gross_tons) : null;
       t.tare_tons = t.tare_tons !== undefined && t.tare_tons !== null && t.tare_tons !== '' ? parseFloat(t.tare_tons) : null;
       if (t.gross_tons !== null && t.tare_tons !== null && !isNaN(t.gross_tons) && !isNaN(t.tare_tons)) {
         const expectedNet = t.gross_tons - t.tare_tons;
         const actualNet = parseFloat(t.tons || 0);
         t._weightCheckDiff = Math.abs(expectedNet - actualNet);
-        t._weightMismatch = t._weightCheckDiff > 0.15; // small tolerance for rounding
+        t._weightMismatch = t._weightCheckDiff > 0.15 || !!t._lbsMismatch; // small tolerance for rounding
         t._expectedNet = expectedNet;
       } else {
         t._weightMismatch = false;
@@ -2657,6 +2674,7 @@ async function processTickets() {
       // doesn't belong there.
       const _hnum = String(t.hauler_number || '').replace(/\s/g, '');
       const _resolveHint = /ravenna|resolve/i.test(String(t.origin_hint || t.pickup || ''));
+      const _lmcHint = /lattimore|\bLMC\b/i.test(String(t.origin_hint || t.pickup || ''));
       // Resolve's own paperwork sometimes prints our truck's vehicle ID (e.g. "19702_EAE")
       // on a load that was actually hauled by a DIFFERENT carrier — the printed Carrier:
       // field is the only thing on the ticket that says so. If it names someone other than
@@ -2671,7 +2689,7 @@ async function processTickets() {
       if (_hnum === '4011121') t.business = 'ea';
       else if (String(t.supplier_truck_id||'').trim()) t.business = 'ea';
       else if (t._carrierMismatch) t.business = '';
-      else if (String(t.po_number||'').trim() || _resolveHint) t.business = 'ea';
+      else if (String(t.po_number||'').trim() || _resolveHint || _lmcHint) t.business = 'ea';
       else t.business = 'axelar';
       // Persist the raw report fields under their storage names (kept separate from
       // hauler_number/etc. used only transiently above, so a future prompt tweak
@@ -2772,6 +2790,19 @@ async function processTickets() {
         // mechanism as Amrize/Preferred, no new math needed here. Matching is fuzzy (normalized,
         // either-contains-the-other) because OCR won't reproduce the P.O. text byte-for-byte the
         // same way every time.
+        if (!t.rate_direct && (hint.includes('lattimore') || /\blmc\b/.test(hint))) {
+          const norm = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+          const dNorm = norm(t.deliver), cNorm = norm(t.po_number);
+          const lm = DB.rates.find(r => {
+            if (!r.active || !String(r.origin||'').toLowerCase().startsWith('lattimore')) return false;
+            const pn = norm(r.plant_name);
+            return pn && ((dNorm && (dNorm.includes(pn) || pn.includes(dNorm))) || (cNorm && (cNorm.includes(pn) || pn.includes(cNorm))));
+          });
+          if (lm) {
+            t.rate_direct = lm.rate_per_ton;
+            t.rate_match_label = `Lattimore → ${lm.plant_name} @ $${lm.rate_per_ton.toFixed(2)}/ton`;
+          }
+        }
         if (!t.rate_direct && (hint.includes('resolve') || hint.includes('ravenna'))) {
           const norm = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
           const poNorm = norm(t.deliver || t.po_number);
@@ -7069,6 +7100,7 @@ function detectCarrierAndOrigin(t) {
   if (hint.includes('holcim')) return { carrier: 'Preferred Materials', origin: 'Preferred: Holcim' };
   if (hint.includes('united sand') || hint.includes('united s&g') || hint.includes('ivanhoe')) return { carrier: 'Preferred Materials', origin: 'Preferred: United Sand & Gravel' };
   if (hint.includes('ravenna') || hint.includes('resolve')) return { carrier: 'Resolve Aggregates', origin: 'Resolve: Ravenna 2' };
+  if (hint.includes('lattimore') || /\blmc\b/.test(hint)) return { carrier: 'Lattimore Materials', origin: 'Lattimore: LMC' };
   // Anything unrecognized still gets counted — labeled by whatever the ticket shows so nothing
   // silently vanishes from the report, it just won't have a clean carrier name yet.
   return { carrier: 'Other / Unmatched', origin: t.origin_hint || t.pickup || 'Unknown origin' };
