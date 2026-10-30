@@ -749,6 +749,17 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
       <div id="resolve-job-list" style="margin-top:10px;display:none;"><div class="empty"><span class="empty-icon">🪨</span>No Resolve jobs set up yet</div></div>
     </div>
 
+
+    <!-- Lattimore Materials (LMC) jobs — flat $/ton per customer/job -->
+    <div class="card">
+      <div class="card-title">🟡 Lattimore (LMC) Jobs</div>
+      <div style="font-size:12px;color:var(--text2);line-height:1.6;margin:10px 0 12px;">
+        Add each Lattimore customer/job once with its $/ton. Scanned LMC tickets then fill the rate in automatically by matching the customer name (or contract #) written on the ticket.
+      </div>
+      <button class="btn btn-green" style="width:100%;" onclick="openLmcJobForm()">➕ Add Lattimore Job</button>
+      <div id="lmc-job-list" style="margin-top:10px;"><div class="empty"><span class="empty-icon">🟡</span>No Lattimore jobs set up yet</div></div>
+    </div>
+
     <!-- Live Report Preview — Axelar -->
     <div class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;cursor:pointer;" onclick="toggleMetricsSection('axelar-report-preview-wrap','axelar-report-arrow','block')">
@@ -1696,7 +1707,7 @@ function switchTab(n) {
   if (n === 'settlements') renderSetts();
   if (n === 'drivers') renderDriverPay();
   if (n === 'weekly') renderWeekly();
-  if (n === 'reports') { populateReportYearFilter(); renderReportPreview(); renderEAReportPreview(); renderEAReportSummary(); renderInvoiceHistory(); renderFSCRateList(); renderResolveJobList(); initPercentageReportDates(); initCarrierReportDates(); initReconDates(); initTruckRevDates(); }
+  if (n === 'reports') { populateReportYearFilter(); renderReportPreview(); renderEAReportPreview(); renderEAReportSummary(); renderInvoiceHistory(); renderFSCRateList(); renderResolveJobList(); renderLmcJobList(); initPercentageReportDates(); initCarrierReportDates(); initReconDates(); initTruckRevDates(); }
 }
 
 // Default the Percentage Driver Report range to "this month" the first time Reports is opened —
@@ -6130,6 +6141,58 @@ async function deleteFSCRateForm() {
 // no delivery address to use instead.
 const RESOLVE_ORIGIN = 'Resolve: Ravenna 2';
 
+// ─── LATTIMORE (LMC) JOBS — same Rates tab/matching as Resolve, origin 'Lattimore: LMC' ──
+const LMC_ORIGIN = 'Lattimore: LMC';
+let _lmcOrigName = '';
+function renderLmcJobList() {
+  const el = document.getElementById('lmc-job-list');
+  if (!el) return;
+  const jobs = (DB.rates||[]).filter(r => r.origin === LMC_ORIGIN);
+  if (!jobs.length) { el.innerHTML = '<div class="empty"><span class="empty-icon">🟡</span>No Lattimore jobs set up yet</div>'; return; }
+  el.innerHTML = jobs.map(j => `<div class="card" style="padding:10px 14px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+    <div><div style="font-weight:600;">${j.plant_name}</div><div style="font-size:12px;color:var(--text2);">${j.notes||''}</div></div>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <div style="font-family:'Barlow Condensed',sans-serif;font-size:22px;font-weight:700;color:var(--accent);">$${parseFloat(j.rate_per_ton||0).toFixed(2)}/ton</div>
+      <button class="btn btn-sm" style="background:var(--surface2);border:1px solid var(--border2);" onclick="openLmcJobForm(this.dataset.n)" data-n="${String(j.plant_name).replace(/"/g,'&quot;')}">✏️</button>
+    </div>
+  </div>`).join('');
+}
+function openLmcJobForm(name) {
+  const j = name ? (DB.rates||[]).find(r => r.origin === LMC_ORIGIN && r.plant_name === name) : null;
+  _lmcOrigName = j ? j.plant_name : '';
+  document.getElementById('lmc-job-modal-title').textContent = j ? '🟡 Edit Lattimore Job' : '🟡 Add Lattimore Job';
+  document.getElementById('lmc-job-name').value = j ? j.plant_name : '';
+  document.getElementById('lmc-job-rate').value = j ? j.rate_per_ton : '';
+  document.getElementById('lmc-job-notes').value = j ? (j.notes||'') : '';
+  document.getElementById('lmc-job-delete-btn').style.display = j ? 'inline-flex' : 'none';
+  document.getElementById('lmc-job-modal').style.display = 'flex';
+}
+function closeLmcJobModal() { document.getElementById('lmc-job-modal').style.display = 'none'; }
+async function saveLmcJobForm() {
+  const plantName = document.getElementById('lmc-job-name').value.trim();
+  if (!plantName) { showGlobalAlert('⚠ Enter the customer/job name as written on the ticket.', 'err'); return; }
+  const rate = parseFloat(document.getElementById('lmc-job-rate').value);
+  if (isNaN(rate) || rate <= 0) { showGlobalAlert('⚠ Enter the rate per ton.', 'err'); return; }
+  const notes = document.getElementById('lmc-job-notes').value.trim();
+  const dupe = (DB.rates||[]).find(r => r.origin === LMC_ORIGIN && r.plant_name.toLowerCase() === plantName.toLowerCase() && r.plant_name !== _lmcOrigName);
+  if (dupe) { showGlobalAlert('⚠ A Lattimore job with that name already exists.', 'err'); return; }
+  const idx = (DB.rates||[]).findIndex(r => r.origin === LMC_ORIGIN && r.plant_name === _lmcOrigName);
+  const createdAt = (idx >= 0 && DB.rates[idx].created_at) ? DB.rates[idx].created_at : new Date().toISOString();
+  const job = { status: 'ACTIVE', origin: LMC_ORIGIN, supplier: 'Lattimore Materials', servcagent: '', plant_code: '', plant_name: plantName, rate_per_ton: rate, notes, active: true, orig_plant_name: _lmcOrigName || plantName, created_at: createdAt };
+  if (idx >= 0) { DB.rates[idx] = {...DB.rates[idx], ...job}; } else { DB.rates.push(job); }
+  save(); renderLmcJobList(); closeLmcJobModal();
+  await gasPost({action: 'saveResolveJob', job});
+  showGlobalAlert(`✅ ${plantName} set to $${rate.toFixed(2)}/ton`, 'ok');
+}
+async function deleteLmcJobForm() {
+  if (!_lmcOrigName) return;
+  if (!confirm(`Remove the Lattimore job "${_lmcOrigName}"? Tickets for it will stop auto-filling a rate until you add it back.`)) return;
+  DB.rates = (DB.rates||[]).filter(r => !(r.origin === LMC_ORIGIN && r.plant_name === _lmcOrigName));
+  save(); renderLmcJobList(); closeLmcJobModal();
+  await gasPost({action: 'deleteResolveJob', plant_name: _lmcOrigName, origin: LMC_ORIGIN});
+  showGlobalAlert('🗑 Lattimore job removed', 'ok');
+}
+
 function renderResolveJobList() {
   const el = document.getElementById('resolve-job-list');
   const summaryEl = document.getElementById('resolve-job-list-summary');
@@ -6263,7 +6326,7 @@ async function saveResolveJobForm() {
   const job = { status: 'ACTIVE', origin: RESOLVE_ORIGIN, supplier: 'Resolve Aggregates', servcagent: '', plant_code: '', plant_name: plantName, rate_per_ton: rate, notes, active: true, orig_plant_name: origPlantName, created_at: createdAt };
 
   if (idx >= 0) { DB.rates[idx] = {...DB.rates[idx], ...job}; } else { DB.rates.push(job); }
-  save(); renderResolveJobList();
+  save(); renderResolveJobList(); renderLmcJobList();
   closeResolveJobModal();
   await gasPost({action: 'saveResolveJob', job});
   showGlobalAlert(`✅ ${plantName} set to $${rate.toFixed(2)}/ton`, 'ok');
@@ -6274,7 +6337,7 @@ async function deleteResolveJobForm() {
   if (!origPlantName) return;
   if (!confirm(`Remove the Resolve job "${origPlantName}"? Tickets for that P.O. will stop auto-filling a rate until you add it back.`)) return;
   DB.rates = (DB.rates||[]).filter(r => !(r.origin === RESOLVE_ORIGIN && r.plant_name === origPlantName));
-  save(); renderResolveJobList();
+  save(); renderResolveJobList(); renderLmcJobList();
   closeResolveJobModal();
   await gasPost({action: 'deleteResolveJob', plant_name: origPlantName});
   showGlobalAlert('🗑 Resolve job removed', 'ok');
@@ -7630,7 +7693,7 @@ function renderAll() {
   const wp = document.getElementById('panel-weekly');
   if (wp && wp.classList.contains('active')) renderWeekly();
   const rp = document.getElementById('panel-reports');
-  if (rp && rp.classList.contains('active')) { populateReportYearFilter(); renderReportPreview(); renderEAReportPreview(); renderEAReportSummary(); renderInvoiceHistory(); renderFSCRateList(); renderResolveJobList(); }
+  if (rp && rp.classList.contains('active')) { populateReportYearFilter(); renderReportPreview(); renderEAReportPreview(); renderEAReportSummary(); renderInvoiceHistory(); renderFSCRateList(); renderResolveJobList(); renderLmcJobList(); }
   const dp = document.getElementById('panel-drivers');
   if (dp && dp.classList.contains('active')) renderDriverPay();
 }
@@ -8392,6 +8455,31 @@ if ('serviceWorker' in navigator) {
       <button class="btn btn-red" id="fsc-rate-delete-btn" style="display:none;margin-right:auto;" onclick="deleteFSCRateForm()">🗑 Delete</button>
       <button class="btn" onclick="closeFSCRateModal()">Cancel</button>
       <button class="btn btn-green" onclick="saveFSCRateForm()">✅ Save</button>
+    </div>
+  </div>
+</div>
+
+
+<div id="lmc-job-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;align-items:center;justify-content:center;padding:16px;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;width:100%;max-width:420px;max-height:85vh;overflow-y:auto;">
+    <div class="invoice-modal-title" id="lmc-job-modal-title">🟡 Add Lattimore Job</div>
+    <div class="invoice-field">
+      <label>Customer / job name (as written on the ticket)</label>
+      <input type="text" id="lmc-job-name" placeholder="e.g. Pavecon Public Works">
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">Matches loosely — it just needs to be contained in what the scan reads, or the other way around.</div>
+    </div>
+    <div class="invoice-field">
+      <label>Rate per ton ($)</label>
+      <input type="number" step="0.01" id="lmc-job-rate">
+    </div>
+    <div class="invoice-field">
+      <label>Notes (optional — contract # is handy here)</label>
+      <input type="text" id="lmc-job-notes" placeholder="e.g. Contract 401083434">
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px;">
+      <button class="btn btn-red" id="lmc-job-delete-btn" style="display:none;margin-right:auto;" onclick="deleteLmcJobForm()">🗑 Delete</button>
+      <button class="btn" onclick="closeLmcJobModal()">Cancel</button>
+      <button class="btn btn-green" onclick="saveLmcJobForm()">✅ Save</button>
     </div>
   </div>
 </div>
