@@ -2998,6 +2998,21 @@ async function rememberTruckDriver(i) {
   await gasPost({action: 'saveDriver', driver: updated});
 }
 
+// Date fail-safe: a handwritten month/day misread (05/27 instead of 10/27) is easy to miss.
+// Flags a ticket whose date is unreadable, in the future, or more than 21 days before today.
+const TICKET_DATE_MAX_AGE_DAYS = 21;
+function ticketDateFlag(dateStr) {
+  const d = parseLocalDate(String(dateStr || '').trim());
+  if (!d || isNaN(d.getTime())) return 'The date is missing or can\'t be read.';
+  const d0 = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const now = new Date(); const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const days = Math.round((t0 - d0) / 86400000);
+  const pretty = d0.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  if (days < 0) return `${pretty} is in the future (today is ${t0.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}).`;
+  if (days > TICKET_DATE_MAX_AGE_DAYS) return `${pretty} is ${days} days ago — tickets are normally scanned within ${TICKET_DATE_MAX_AGE_DAYS} days.`;
+  return null;
+}
+
 function updateReviewBadge(i) {
   const t = pendingTickets[i];
   if (!t) return;
@@ -3013,10 +3028,25 @@ function updateReviewBadge(i) {
     t._weightCheckDiff = Math.abs(t._expectedNet - parseFloat(t.tons || 0));
     t._weightMismatch = t._weightCheckDiff > 0.15;
   }
+  t._dateFlag = ticketDateFlag(t.date);
+  {
+    const nowFlagged = !!t._dateFlag;
+    if (nowFlagged !== !!t._dateFlagShown) {
+      const inc = document.getElementById('ptk-inc-' + i);
+      if (inc) inc.checked = nowFlagged ? false : !(t._dup || t._carrierMismatch);
+      t._dateFlagShown = nowFlagged;
+    }
+    const dEl = document.getElementById('ptk-dcheck-' + i);
+    if (dEl) {
+      dEl.style.display = nowFlagged ? 'block' : 'none';
+      dEl.innerHTML = nowFlagged ? `⚠ Check the date — ${t._dateFlag} Compare with the photo, fix it, then make sure Save is ticked.` : '';
+    }
+  }
   let statusBadge;
   if (t._dup) statusBadge = '<span class="badge badge-amber">duplicate</span>';
   else if (t._carrierMismatch) statusBadge = '<span class="badge badge-red">⚠ carrier mismatch</span>';
   else if (t._scanError) statusBadge = '<span class="badge badge-red">scan failed</span>';
+  else if (t._dateFlag) statusBadge = '<span class="badge badge-red">⚠ check date</span>';
   else if (t._weightMismatch) statusBadge = `<span class="badge badge-red">⚠ tons don't add up</span>`;
   else if (hasDisc) statusBadge = `<span class="badge badge-red">⚠ tons: paid ${parseFloat(pv.tons).toFixed(2)}</span>`;
   else if (pv.matched) statusBadge = '<span class="badge badge-green">✓ matches ' + (pv.company||'') + '</span>';
@@ -3033,7 +3063,7 @@ function updateReviewBadge(i) {
     }
   }
   const cardEl = document.getElementById('ptk-card-' + i);
-  if (cardEl) cardEl.style.borderColor = t._weightMismatch ? 'var(--red)' : t._dup ? 'var(--amber)' : hasDisc ? 'var(--red)' : pv.matched ? 'var(--green)' : 'var(--border)';
+  if (cardEl) cardEl.style.borderColor = t._dateFlag ? 'var(--red)' : t._weightMismatch ? 'var(--red)' : t._dup ? 'var(--amber)' : hasDisc ? 'var(--red)' : pv.matched ? 'var(--green)' : 'var(--border)';
 }
 
 function renderTicketReview() {
@@ -3044,12 +3074,14 @@ function renderTicketReview() {
   const rows = pendingTickets.map((t, i) => {
     const pv = previewMatch(t.ticket);
     t._matchPreview = pv;
+    t._dateFlag = ticketDateFlag(t.date);
     t._dup = !!DB.tickets.find(x => String(x.ticket||'').replace(/\s/g,'') === String(t.ticket||'').replace(/\s/g,'') && String(t.ticket||'').trim() !== '');
     const tonsDiff = pv.matched && t.tons ? Math.abs(parseFloat(t.tons||0) - parseFloat(pv.tons||0)) : 0;
     const hasDisc = tonsDiff > 0.1;
     let statusBadge;
     if (t._dup) statusBadge = '<span class="badge badge-amber">duplicate</span>';
     else if (t._carrierMismatch) statusBadge = '<span class="badge badge-red">⚠ carrier mismatch</span>';
+    else if (t._dateFlag) statusBadge = '<span class="badge badge-red">⚠ check date</span>';
     else if (t._scanError) statusBadge = '<span class="badge badge-red">scan failed</span>';
     else if (t._weightMismatch) statusBadge = `<span class="badge badge-red">⚠ tons don't add up</span>`;
     else if (hasDisc) statusBadge = `<span class="badge badge-red">⚠ tons: paid ${parseFloat(pv.tons).toFixed(2)}</span>`;
@@ -3058,16 +3090,19 @@ function renderTicketReview() {
     const photoBtn = t.photo_url ? `<a href="#" onclick="viewPhoto('${t.photo_url}');return false;" style="font-size:14px;text-decoration:none;" title="View photo">📷</a>` : '';
     const inputStyleS = 'width:100%;padding:6px 5px;font-size:12px;background:var(--surface);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:\'Barlow\',sans-serif;';
     const inputStyle = 'width:100%;padding:6px 8px;font-size:13px;background:var(--surface);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:\'Barlow\',sans-serif;';
+    t._dateFlag = ticketDateFlag(t.date);
+    t._dateFlagShown = !!t._dateFlag;
+    const dateBanner = `<div id="ptk-dcheck-${i}" style="display:${t._dateFlag ? 'block' : 'none'};background:rgba(230,57,70,0.1);border:1px solid var(--red);border-radius:8px;padding:8px;margin-bottom:8px;font-size:12px;color:var(--red);">${t._dateFlag ? `⚠ Check the date — ${t._dateFlag} Compare with the photo, fix it, then make sure Save is ticked.` : ''}</div>`;
     const weightBanner = `<div id="ptk-wcheck-${i}" style="display:${t._weightMismatch ? 'block' : 'none'};background:rgba(230,57,70,0.1);border:1px solid var(--red);border-radius:8px;padding:8px;margin-bottom:8px;font-size:12px;color:var(--red);">${t._weightMismatch ? `⚠ Tons don't add up — Gross ${(t.gross_tons||0).toFixed(2)} − Tare ${(t.tare_tons||0).toFixed(2)} = ${(t._expectedNet||0).toFixed(2)}, but Net shows ${parseFloat(t.tons||0).toFixed(2)}. Check the ticket photo and fix before saving.` : ''}</div>`;
     // Resolve's ticket Carrier: field named someone other than Earth Angels Express on a
     // ticket that otherwise looks like ours (same P.O./Ravenna origin, even our truck's
     // vehicle ID) — most likely this load wasn't actually hauled by us. Defaulted to
     // Axelar below so it won't wrongly skip a broker fee; flagged here so it isn't missed.
     const carrierBanner = t._carrierMismatch ? `<div style="background:rgba(230,57,70,0.1);border:1px solid var(--red);border-radius:8px;padding:8px;margin-bottom:8px;font-size:12px;color:var(--red);">⚠ Ticket's Carrier field says "<b>${t._carrierMismatch}</b>" — not Earth Angels Express. This may be a different carrier's load, even though the P.O./location and vehicle ID look like one of ours. Verify against the photo before saving.</div>` : '';
-    return `<div id="ptk-card-${i}" style="background:var(--surface2);border:1px solid ${t._carrierMismatch ? 'var(--red)' : t._weightMismatch ? 'var(--red)' : t._dup ? 'var(--amber)' : hasDisc ? 'var(--red)' : pv.matched ? 'var(--green)' : 'var(--border)'};border-radius:10px;padding:10px;margin-bottom:8px;">
+    return `<div id="ptk-card-${i}" style="background:var(--surface2);border:1px solid ${t._carrierMismatch ? 'var(--red)' : t._dateFlag ? 'var(--red)' : t._weightMismatch ? 'var(--red)' : t._dup ? 'var(--amber)' : hasDisc ? 'var(--red)' : pv.matched ? 'var(--green)' : 'var(--border)'};border-radius:10px;padding:10px;margin-bottom:8px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
-          <input type="checkbox" id="ptk-inc-${i}" ${(t._dup || t._carrierMismatch) ? '' : 'checked'} style="width:16px;height:16px;accent-color:var(--green);">
+          <input type="checkbox" id="ptk-inc-${i}" ${(t._dup || t._carrierMismatch || t._dateFlag) ? '' : 'checked'} style="width:16px;height:16px;accent-color:var(--green);">
           <span style="color:var(--text2);">Save</span>
         </label>
         ${photoBtn}
@@ -3076,9 +3111,10 @@ function renderTicketReview() {
       </div>
       ${carrierBanner}
       ${weightBanner}
+      ${dateBanner}
       <div style="display:grid;grid-template-columns:1.35fr 1.25fr 0.8fr;gap:6px;margin-bottom:6px;">
         <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Ticket #</div><input style="${inputStyleS}" value="${(t.ticket||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].ticket=this.value;clearTimeout(window._ptkT);window._ptkT=setTimeout(()=>updateReviewBadge(${i}),500);"></div>
-        <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Date</div><input style="${inputStyleS}" value="${(t.date||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].date=this.value;"></div>
+        <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Date</div><input style="${inputStyleS}" value="${(t.date||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].date=this.value;clearTimeout(window._ptkT3);window._ptkT3=setTimeout(()=>updateReviewBadge(${i}),500);"></div>
         <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Tons</div><input style="${inputStyleS}" value="${(t.tons||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].tons=this.value;clearTimeout(window._ptkT2);window._ptkT2=setTimeout(()=>updateReviewBadge(${i}),500);">${t.gross_tons!==null&&t.gross_tons!==undefined?`<div style="font-size:10px;color:var(--text3);margin-top:2px;white-space:nowrap;">G ${t.gross_tons.toFixed(1)} − T ${(t.tare_tons||0).toFixed(1)}</div>`:''}</div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
