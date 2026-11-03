@@ -2704,6 +2704,12 @@ async function processTickets() {
         let nl = num(t.net_lbs);
         if (gl && tl && !nl) nl = gl - tl;
         if (nl && nl > 1000) {
+          const tw0 = num(t.tons_written);
+          const fxl = (gl && tl) ? netTareFix(gl, tl, nl, tw0 != null ? tw0 * 2000 : null, 40, 40, 100) : null;
+          if (fxl != null) {
+            t._autoFixedNet = `Net was read as ${(nl / 2000).toFixed(2)} tons, which doesn't match Gross − Tare. Used Gross ${(gl / 2000).toFixed(2)} − Tare ${(tl / 2000).toFixed(2)} = ${(fxl / 2000).toFixed(2)} tons.`;
+            nl = fxl;
+          }
           t.tons = Math.round(nl / 2000 * 100) / 100;
           if (gl && tl) { t.gross_tons = Math.round(gl / 2000 * 100) / 100; t.tare_tons = Math.round(tl / 2000 * 100) / 100; }
           t._lbsNote = `${nl.toLocaleString()} lb net ÷ 2000`;
@@ -2716,7 +2722,15 @@ async function processTickets() {
       t.tare_tons = t.tare_tons !== undefined && t.tare_tons !== null && t.tare_tons !== '' ? parseFloat(t.tare_tons) : null;
       if (t.gross_tons !== null && t.tare_tons !== null && !isNaN(t.gross_tons) && !isNaN(t.tare_tons)) {
         const expectedNet = t.gross_tons - t.tare_tons;
-        const actualNet = parseFloat(t.tons || 0);
+        let actualNet = parseFloat(t.tons || 0);
+        if (!t._autoFixedNet) {
+          const fxt = netTareFix(t.gross_tons, t.tare_tons, actualNet, null, 0.02, 0.15, 0.05);
+          if (fxt != null) {
+            t._autoFixedNet = `Net was read as ${actualNet.toFixed(2)} tons, which doesn't match Gross − Tare. Used Gross ${t.gross_tons.toFixed(2)} − Tare ${t.tare_tons.toFixed(2)} = ${fxt.toFixed(2)} tons.`;
+            t.tons = Math.round(fxt * 100) / 100;
+            actualNet = t.tons;
+          }
+        }
         t._weightCheckDiff = Math.abs(expectedNet - actualNet);
         t._weightMismatch = t._weightCheckDiff > 0.15 || !!t._lbsMismatch; // small tolerance for rounding
         t._expectedNet = expectedNet;
@@ -2998,6 +3012,22 @@ async function rememberTruckDriver(i) {
   await gasPost({action: 'saveDriver', driver: updated});
 }
 
+// Net/Tare/Gross row mix-up: the reader sometimes grabs the Tare (or Gross) row as the Net.
+// If Net doesn't equal Gross - Tare AND it exactly equals the Tare or Gross figure (a row mix-up),
+// or the handwritten tons agrees with Gross - Tare, use Gross - Tare. If the written tons agrees
+// with the Net instead, a Gross/Tare digit was misread, so leave it alone and let the red flag fire.
+// All numbers must be in the same unit. Returns the corrected Net, or null when no fix applies.
+function netTareFix(g, tr, net, written, matchTol, mismatchTol, writtenTol) {
+  if ([g, tr, net].some(v => v == null || isNaN(v))) return null;
+  const calc = g - tr;
+  if (calc <= 0 || Math.abs(calc - net) <= mismatchTol) return null;
+  const hasW = written != null && !isNaN(written);
+  const wAgreesNet = hasW && Math.abs(written - net) <= writtenTol;
+  const wAgreesCalc = hasW && Math.abs(written - calc) <= writtenTol;
+  const rowMix = Math.abs(net - tr) <= matchTol || Math.abs(net - g) <= matchTol;
+  return ((rowMix && !wAgreesNet) || wAgreesCalc) ? calc : null;
+}
+
 // Date fail-safe: a handwritten month/day misread (05/27 instead of 10/27) is easy to miss.
 // Flags a ticket whose date is unreadable, in the future, or more than 21 days before today.
 const TICKET_DATE_MAX_AGE_DAYS = 21;
@@ -3049,6 +3079,7 @@ function updateReviewBadge(i) {
   else if (t._dateFlag) statusBadge = '<span class="badge badge-red">⚠ check date</span>';
   else if (t._weightMismatch) statusBadge = `<span class="badge badge-red">⚠ tons don't add up</span>`;
   else if (hasDisc) statusBadge = `<span class="badge badge-red">⚠ tons: paid ${parseFloat(pv.tons).toFixed(2)}</span>`;
+  else if (t._autoFixedNet) statusBadge = '<span class="badge badge-amber">net auto-fixed</span>';
   else if (pv.matched) statusBadge = '<span class="badge badge-green">✓ matches ' + (pv.company||'') + '</span>';
   else statusBadge = '<span class="badge badge-gray">awaiting settlement</span>';
   const badgeEl = document.getElementById('ptk-badge-' + i);
@@ -3085,6 +3116,7 @@ function renderTicketReview() {
     else if (t._scanError) statusBadge = '<span class="badge badge-red">scan failed</span>';
     else if (t._weightMismatch) statusBadge = `<span class="badge badge-red">⚠ tons don't add up</span>`;
     else if (hasDisc) statusBadge = `<span class="badge badge-red">⚠ tons: paid ${parseFloat(pv.tons).toFixed(2)}</span>`;
+    else if (t._autoFixedNet) statusBadge = '<span class="badge badge-amber">net auto-fixed</span>';
     else if (pv.matched) statusBadge = '<span class="badge badge-green">✓ matches ' + (pv.company||'') + '</span>';
     else statusBadge = '<span class="badge badge-gray">awaiting settlement</span>';
     const photoBtn = t.photo_url ? `<a href="#" onclick="viewPhoto('${t.photo_url}');return false;" style="font-size:14px;text-decoration:none;" title="View photo">📷</a>` : '';
@@ -3093,6 +3125,7 @@ function renderTicketReview() {
     t._dateFlag = ticketDateFlag(t.date);
     t._dateFlagShown = !!t._dateFlag;
     const dateBanner = `<div id="ptk-dcheck-${i}" style="display:${t._dateFlag ? 'block' : 'none'};background:rgba(230,57,70,0.1);border:1px solid var(--red);border-radius:8px;padding:8px;margin-bottom:8px;font-size:12px;color:var(--red);">${t._dateFlag ? `⚠ Check the date — ${t._dateFlag} Compare with the photo, fix it, then make sure Save is ticked.` : ''}</div>`;
+    const netFixBanner = t._autoFixedNet ? `<div style="background:rgba(245,166,35,0.12);border:1px solid var(--amber);border-radius:8px;padding:8px;margin-bottom:8px;font-size:12px;color:var(--amber);">🛠 Auto-corrected — ${t._autoFixedNet} Check the Tons against the photo.</div>` : '';
     const weightBanner = `<div id="ptk-wcheck-${i}" style="display:${t._weightMismatch ? 'block' : 'none'};background:rgba(230,57,70,0.1);border:1px solid var(--red);border-radius:8px;padding:8px;margin-bottom:8px;font-size:12px;color:var(--red);">${t._weightMismatch ? `⚠ Tons don't add up — Gross ${(t.gross_tons||0).toFixed(2)} − Tare ${(t.tare_tons||0).toFixed(2)} = ${(t._expectedNet||0).toFixed(2)}, but Net shows ${parseFloat(t.tons||0).toFixed(2)}. Check the ticket photo and fix before saving.` : ''}</div>`;
     // Resolve's ticket Carrier: field named someone other than Earth Angels Express on a
     // ticket that otherwise looks like ours (same P.O./Ravenna origin, even our truck's
@@ -3112,6 +3145,7 @@ function renderTicketReview() {
       ${carrierBanner}
       ${weightBanner}
       ${dateBanner}
+      ${netFixBanner}
       <div style="display:grid;grid-template-columns:1.35fr 1.25fr 0.8fr;gap:6px;margin-bottom:6px;">
         <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Ticket #</div><input style="${inputStyleS}" value="${(t.ticket||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].ticket=this.value;clearTimeout(window._ptkT);window._ptkT=setTimeout(()=>updateReviewBadge(${i}),500);"></div>
         <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:2px;">Date</div><input style="${inputStyleS}" value="${(t.date||'').toString().replace(/"/g,'&quot;')}" oninput="pendingTickets[${i}].date=this.value;clearTimeout(window._ptkT3);window._ptkT3=setTimeout(()=>updateReviewBadge(${i}),500);"></div>
