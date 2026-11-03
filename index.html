@@ -1112,7 +1112,33 @@ async function uploadPhotoToDrive(file, ticketNum, convertedB64) {
           metadata.name = metadata.name.replace(/\.[^.]+$/, '') + '.jpg';
         } catch (_) {}
       }
-      if (attempt >= 2) throw new Error('No connection to Google Drive — ticket saved, photo not uploaded');
+      if (attempt >= 2) {
+        // Work out WHY, instead of guessing: ask Drive a tiny question with the same login.
+        // - answers 200  → Drive is reachable and the login works, so the photo upload itself failed
+        // - answers 401  → Google sign-in on this phone expired / was rejected
+        // - no answer    → this phone/network can't reach Google Drive at all
+        let why = '', who = '', quotaTxt = '', full = false;
+        try {
+          const pr = await fetch('https://www.googleapis.com/drive/v3/about?fields=user,storageQuota', { headers: { 'Authorization': 'Bearer ' + gAccessToken } });
+          if (pr.ok) {
+            try {
+              const j = await pr.json(); who = (j.user && j.user.emailAddress) || '';
+              const q = j.storageQuota || {}, gb = v => (parseFloat(v) / 1073741824).toFixed(1);
+              if (q.limit) { quotaTxt = `${gb(q.usage)} of ${gb(q.limit)} GB used`; full = parseFloat(q.usage) >= parseFloat(q.limit) * 0.995; }
+            } catch (_) {}
+            why = 'reach-ok';
+          }
+          else why = 'http-' + pr.status;
+        } catch (pe) { why = 'no-reach'; }
+        const sizeMb = (uploadFile && uploadFile.size ? uploadFile.size / 1048576 : 0).toFixed(1);
+        let msg;
+        if (why === 'reach-ok' && full) msg = `Google Drive storage is FULL for ${who || 'this account'} (${quotaTxt}) — free up space or upgrade. Ticket saved, photo not uploaded`;
+        else if (why === 'reach-ok') msg = `Drive is reachable${who ? ' (signed in as ' + who + (quotaTxt ? ', ' + quotaTxt : '') + ')' : ''} but this ${sizeMb}MB photo wouldn't upload — ticket saved, photo not uploaded`;
+        else if (why === 'http-401' || why === 'http-403') msg = `Google sign-in problem (${why.slice(5)}) — tap "Sign in with Google" on the Dashboard, then re-scan. Ticket saved, photo not uploaded`;
+        else if (why === 'no-reach') msg = 'This phone can\'t reach Google Drive right now (Wi-Fi/network or a blocker) — ticket saved, photo not uploaded';
+        else msg = `Drive error ${why} — ticket saved, photo not uploaded`;
+        throw new Error(msg);
+      }
       await sleep(1500 * (attempt + 1));
     }
   }
