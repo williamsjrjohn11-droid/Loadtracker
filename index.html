@@ -1093,7 +1093,29 @@ async function uploadPhotoToDrive(file, ticketNum, convertedB64) {
     });
   };
 
-  let resp = await doUpload();
+  // A network-level failure (Safari says "Load failed", Chrome "Failed to fetch") means no HTTP
+  // reply came back at all — weak signal, a dropped connection, or a big original photo timing
+  // out on cellular. Retry a couple of times, then fall back to the much smaller 2000px copy
+  // the app already made for the AI read, so a flaky connection doesn't lose the Drive link.
+  const isNetErr = e => /load failed|failed to fetch|networkerror|network request|timed out|aborted/i.test(String(e && e.message || e));
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  let resp;
+  for (let attempt = 0; ; attempt++) {
+    try { resp = await doUpload(); break; }
+    catch (e) {
+      if (!isNetErr(e)) throw e;
+      if (attempt === 1 && convertedB64) {
+        try {
+          const bc = atob(convertedB64), ba = new Uint8Array(bc.length);
+          for (let i = 0; i < bc.length; i++) ba[i] = bc.charCodeAt(i);
+          uploadFile = new Blob([ba], {type: 'image/jpeg'});
+          metadata.name = metadata.name.replace(/\.[^.]+$/, '') + '.jpg';
+        } catch (_) {}
+      }
+      if (attempt >= 2) throw new Error('No connection to Google Drive — ticket saved, photo not uploaded');
+      await sleep(1500 * (attempt + 1));
+    }
+  }
 
   // Token expired (401) → silently refresh and retry ONCE before giving up
   if (resp.status === 401) {
@@ -2843,7 +2865,7 @@ async function processTickets() {
       if (gAccessToken) {
         if (el) el.querySelector('.proc-status').innerHTML = '📤';
         try {
-          photoUrl = await uploadPhotoToDrive(f, t.ticket || 'unknown');
+          photoUrl = await uploadPhotoToDrive(f, t.ticket || 'unknown', jpegB64);
         } catch(photoErr) {
           if (el) el.innerHTML += ` <span style="font-size:11px;color:var(--amber);">⚠ Drive: ${photoErr.message}</span>`;
         }
