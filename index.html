@@ -4048,7 +4048,10 @@ function renderTicketRow(x) {
   const photoBtn = x.photo_url ? `<a href="#" onclick="viewPhoto('${x.photo_url}');return false;" style="font-size:12px;text-decoration:none;margin-left:3px;" title="View photo">📷</a>` : '';
   const editBtn = `<button onclick="editTicket('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text3);margin-left:3px;padding:0;" title="Edit ticket number">✏️</button>`;
   const tonsBtn = `<button onclick="editTicketTons('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text3);margin-left:3px;padding:0;" title="Edit tons">⚖️</button>`;
-  const dateBtn = `<button onclick="editTicketDate('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text3);margin-left:3px;padding:0;" title="Edit date">📅</button>`;
+  // A year that isn't this year or last (handwriting "26" read as "06"/"96") means FSC can't find a week.
+  const _yr = (parseLocalDate(x.date) || null) ? parseLocalDate(x.date).getFullYear() : null, _cy = new Date().getFullYear();
+  const yearWarn = (_yr !== null && (_yr < _cy - 1 || _yr > _cy)) ? `<span title="The year on this ticket looks wrong (${_yr}) — tap 📅 to fix it. Fuel surcharge can't find a week for it." style="color:var(--amber);font-size:13px;margin-left:3px;cursor:help;">⚠</span>` : '';
+  const dateBtn = yearWarn + `<button onclick="editTicketDate('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text3);margin-left:3px;padding:0;" title="Edit date">📅</button>`;
   const delBtn = `<button onclick="deleteTicket('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text3);margin-left:3px;padding:0;" title="Delete ticket">🗑️</button>`;
   const isEA = (x.business||'axelar')==='ea';
   const bizBtn = `<button onclick="toggleTicketBusiness('${x.ticket}')" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text3);margin-left:5px;padding:0;white-space:nowrap;" title="Currently tagged ${isEA?'EA':'Axelar'} — tap to move to ${isEA?'Axelar':'EA'}">🔀 ${isEA?'EA':'Axelar'}</button>`;
@@ -7271,6 +7274,9 @@ function detectCarrierAndOrigin(t) {
   // added a keyword for yet, etc.). Set once on the ticket, it sticks regardless of what the
   // detection logic below would otherwise guess.
   if (t.carrier_override) {
+    // A Lattimore ticket someone manually set to Amrize keeps the same 'Lattimore: LMC' origin as
+    // the auto-detected ones, so reports group them together instead of splitting them.
+    if (t.carrier_override === 'Amrize' && /lattimore|\blmc\b/i.test(String(t.origin_hint || t.pickup || ''))) return { carrier: 'Amrize', origin: 'Lattimore: LMC' };
     return { carrier: t.carrier_override, origin: `${t.carrier_override}: ${t.pickup || 'manually assigned'}` };
   }
   // Check origin_hint first (the field the AI extracts specifically for this), but fall back
@@ -7284,7 +7290,9 @@ function detectCarrierAndOrigin(t) {
   if (hint.includes('holcim')) return { carrier: 'Preferred Materials', origin: 'Preferred: Holcim' };
   if (hint.includes('united sand') || hint.includes('united s&g') || hint.includes('ivanhoe')) return { carrier: 'Preferred Materials', origin: 'Preferred: United Sand & Gravel' };
   if (hint.includes('ravenna') || hint.includes('resolve')) return { carrier: 'Resolve Aggregates', origin: 'Resolve: Ravenna 2' };
-  if (hint.includes('lattimore') || /\blmc\b/.test(hint)) return { carrier: 'Lattimore Materials', origin: 'Lattimore: LMC' };
+  // Lattimore Materials is part of Amrize: same carrier (so it uses Amrize's weekly FSC and groups
+  // with Amrize everywhere), but its own origin so its flat per-job rates stay separate.
+  if (hint.includes('lattimore') || /\blmc\b/.test(hint)) return { carrier: 'Amrize', origin: 'Lattimore: LMC' };
   // Anything unrecognized still gets counted — labeled by whatever the ticket shows so nothing
   // silently vanishes from the report, it just won't have a clean carrier name yet.
   return { carrier: 'Other / Unmatched', origin: t.origin_hint || t.pickup || 'Unknown origin' };
