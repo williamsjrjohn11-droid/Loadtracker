@@ -427,6 +427,7 @@ textarea:focus,input:focus{outline:none;border-color:var(--accent);}
 
   <!-- TICKETS -->
   <div class="panel" id="panel-tickets">
+    <div id="axelar-fix-banner" style="display:none;"></div>
     <div class="filter-row" style="flex-wrap:wrap;gap:6px;">
       <button class="chip active" onclick="fT('all',this)">All</button>
       <button class="chip" onclick="fT('matched',this)">Matched ✓</button>
@@ -2765,7 +2766,11 @@ async function processTickets() {
       else if (String(t.supplier_truck_id||'').trim()) t.business = 'ea';
       else if (t._carrierMismatch) t.business = '';
       else if (String(t.po_number||'').trim() || _resolveHint || _lmcHint) t.business = 'ea';
-      else t.business = 'axelar';
+      // Axelar only when the ticket itself shows Axelar's hauler number. Earth Angels hasn't hauled
+      // Axelar loads since the start of 2026, so "can't tell" must never fall into Axelar — it used
+      // to, which sent Amrize/Preferred/Lattimore tickets with a missed truck ID to the wrong side.
+      else if (_hnum === '4010550') t.business = 'axelar';
+      else t.business = 'ea';
       // Persist the raw report fields under their storage names (kept separate from
       // hauler_number/etc. used only transiently above, so a future prompt tweak
       // can't silently break what gets saved).
@@ -2810,90 +2815,7 @@ async function processTickets() {
           _lastUsedDriver = altMatch.name;
         }
       }
-      // Auto-fill rate for EA tickets by matching origin + plant_code against DB.rates.
-      // Only runs for EA — Axelar rates come from the settlement PDF.
-      if (t.business === 'ea' && Array.isArray(DB.rates) && DB.rates.length) {
-        const pcode = String(t.plant_code||'').trim().toUpperCase();
-        const hint = String(t.origin_hint||'').toLowerCase();
-        // Normalize the AI-supplied origin hint to the rate table's origin format.
-        // "Ambrose Sand & Gravel" → "amrize: ambrose", "Melissa Yard" or "Melissa Rail" → "amrize: melissa rail"
-        let originKey = '';
-        if (hint.includes('ambrose')) originKey = 'amrize: ambrose';
-        else if (hint.includes('melissa')) originKey = 'amrize: melissa rail';
-        // (add more mappings here as other suppliers get plant codes)
-        if (pcode && originKey) {
-          const match = DB.rates.find(r =>
-            r.active &&
-            r.plant_code.toUpperCase() === pcode &&
-            r.origin.toLowerCase() === originKey
-          );
-          if (match) {
-            t.rate_direct = match.rate_per_ton;
-            t.rate_match_label = `${match.origin.replace(/^Amrize:\s*/i,'')} → ${match.plant_name} @ $${match.rate_per_ton.toFixed(2)}/ton`;
-          }
-        }
-        // Second matching path — Preferred Materials-style tickets have no plant code at all,
-        // but DO have a Yard (pickup) and a stamped Driver Delivery Location, which line up
-        // directly with the origin/plant_name columns already set up in the Rates table for
-        // Preferred (e.g. "Preferred: Grayson" origin, "MELISSA" plant_name). Only runs if the
-        // plant_code path above didn't already find a match.
-        if (!t.rate_direct) {
-          const deliverHint = String(t.deliver||'').trim().toUpperCase();
-          let prefOriginKey = '';
-          if (hint.includes('grayson')) prefOriginKey = 'preferred: grayson';
-          else if (hint.includes('stringtown')) prefOriginKey = 'preferred: stringtown';
-          else if (hint.includes('holcim')) prefOriginKey = 'preferred: holcim';
-          else if (hint.includes('united sand') || hint.includes('united s&g') || hint.includes('ivanhoe')) prefOriginKey = 'preferred: united sand & gravel';
-          if (prefOriginKey && deliverHint) {
-            const prefMatch = DB.rates.find(r =>
-              r.active &&
-              r.origin.toLowerCase() === prefOriginKey &&
-              String(r.plant_name||'').trim().toUpperCase() === deliverHint
-            );
-            if (prefMatch) {
-              t.rate_direct = prefMatch.rate_per_ton;
-              t.rate_match_label = `${prefMatch.origin.replace(/^Preferred:\s*/i,'')} → ${prefMatch.plant_name} @ $${prefMatch.rate_per_ton.toFixed(2)}/ton`;
-            }
-          }
-        }
-        // Third matching path — Resolve Aggregates tickets have no plant code and no delivery
-        // address at all. The job/destination is identified only by the P.O. text (stored in
-        // "deliver" per the extraction prompt above), matched against a Rates row's plant_name
-        // field (reused here to hold the job's P.O./nickname instead of a plant name). Resolve's
-        // rate is really $0.21/loaded ton-mile, but since mileage is fixed per job, the Rates row
-        // just stores the pre-calculated $/ton for that job (mileage × $0.21) — same flat-rate
-        // mechanism as Amrize/Preferred, no new math needed here. Matching is fuzzy (normalized,
-        // either-contains-the-other) because OCR won't reproduce the P.O. text byte-for-byte the
-        // same way every time.
-        if (!t.rate_direct && (hint.includes('lattimore') || /\blmc\b/.test(hint))) {
-          const norm = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
-          const dNorm = norm(t.deliver), cNorm = norm(t.po_number);
-          const lm = DB.rates.find(r => {
-            if (!r.active || !String(r.origin||'').toLowerCase().startsWith('lattimore')) return false;
-            const pn = norm(r.plant_name);
-            return pn && ((dNorm && (dNorm.includes(pn) || pn.includes(dNorm))) || (cNorm && (cNorm.includes(pn) || pn.includes(cNorm))));
-          });
-          if (lm) {
-            t.rate_direct = lm.rate_per_ton;
-            t.rate_match_label = `Lattimore → ${lm.plant_name} @ $${lm.rate_per_ton.toFixed(2)}/ton`;
-          }
-        }
-        if (!t.rate_direct && (hint.includes('resolve') || hint.includes('ravenna'))) {
-          const norm = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
-          const poNorm = norm(t.deliver || t.po_number);
-          if (poNorm) {
-            const resolveMatch = DB.rates.find(r => {
-              if (!r.active || r.origin.toLowerCase() !== 'resolve: ravenna 2') return false;
-              const planNorm = norm(r.plant_name);
-              return planNorm && (poNorm.includes(planNorm) || planNorm.includes(poNorm));
-            });
-            if (resolveMatch) {
-              t.rate_direct = resolveMatch.rate_per_ton;
-              t.rate_match_label = `Ravenna 2 → ${resolveMatch.plant_name} @ $${resolveMatch.rate_per_ton.toFixed(2)}/ton`;
-            }
-          }
-        }
-      }
+      autoMatchRate(t);
       let photoUrl = null;
 
       // Convert to JPEG once — used for both local IndexedDB storage and display
@@ -3010,6 +2932,95 @@ async function rememberTruckDriver(i) {
   renderTicketReview();
   showGlobalAlert(`✅ Truck ${t.truck} → ${t.driver} saved to the Drivers tab — it'll auto-match from now on`, 'ok');
   await gasPost({action: 'saveDriver', driver: updated});
+}
+
+// Fills t.rate_direct / t.rate_match_label for an EA ticket from the Rates tab (Amrize, Preferred,
+// Lattimore, Resolve). Used by the scanner and by the bulk "move to EA" tool.
+function autoMatchRate(t) {
+  // Auto-fill rate for EA tickets by matching origin + plant_code against DB.rates.
+  // Only runs for EA — Axelar rates come from the settlement PDF.
+  if (t.business === 'ea' && Array.isArray(DB.rates) && DB.rates.length) {
+    const pcode = String(t.plant_code||'').trim().toUpperCase();
+    const hint = String(t.origin_hint||'').toLowerCase();
+    // Normalize the AI-supplied origin hint to the rate table's origin format.
+    // "Ambrose Sand & Gravel" → "amrize: ambrose", "Melissa Yard" or "Melissa Rail" → "amrize: melissa rail"
+    let originKey = '';
+    if (hint.includes('ambrose')) originKey = 'amrize: ambrose';
+    else if (hint.includes('melissa')) originKey = 'amrize: melissa rail';
+    // (add more mappings here as other suppliers get plant codes)
+    if (pcode && originKey) {
+      const match = DB.rates.find(r =>
+        r.active &&
+        r.plant_code.toUpperCase() === pcode &&
+        r.origin.toLowerCase() === originKey
+      );
+      if (match) {
+        t.rate_direct = match.rate_per_ton;
+        t.rate_match_label = `${match.origin.replace(/^Amrize:\s*/i,'')} → ${match.plant_name} @ $${match.rate_per_ton.toFixed(2)}/ton`;
+      }
+    }
+    // Second matching path — Preferred Materials-style tickets have no plant code at all,
+    // but DO have a Yard (pickup) and a stamped Driver Delivery Location, which line up
+    // directly with the origin/plant_name columns already set up in the Rates table for
+    // Preferred (e.g. "Preferred: Grayson" origin, "MELISSA" plant_name). Only runs if the
+    // plant_code path above didn't already find a match.
+    if (!t.rate_direct) {
+      const deliverHint = String(t.deliver||'').trim().toUpperCase();
+      let prefOriginKey = '';
+      if (hint.includes('grayson')) prefOriginKey = 'preferred: grayson';
+      else if (hint.includes('stringtown')) prefOriginKey = 'preferred: stringtown';
+      else if (hint.includes('holcim')) prefOriginKey = 'preferred: holcim';
+      else if (hint.includes('united sand') || hint.includes('united s&g') || hint.includes('ivanhoe')) prefOriginKey = 'preferred: united sand & gravel';
+      if (prefOriginKey && deliverHint) {
+        const prefMatch = DB.rates.find(r =>
+          r.active &&
+          r.origin.toLowerCase() === prefOriginKey &&
+          String(r.plant_name||'').trim().toUpperCase() === deliverHint
+        );
+        if (prefMatch) {
+          t.rate_direct = prefMatch.rate_per_ton;
+          t.rate_match_label = `${prefMatch.origin.replace(/^Preferred:\s*/i,'')} → ${prefMatch.plant_name} @ $${prefMatch.rate_per_ton.toFixed(2)}/ton`;
+        }
+      }
+    }
+    // Third matching path — Resolve Aggregates tickets have no plant code and no delivery
+    // address at all. The job/destination is identified only by the P.O. text (stored in
+    // "deliver" per the extraction prompt above), matched against a Rates row's plant_name
+    // field (reused here to hold the job's P.O./nickname instead of a plant name). Resolve's
+    // rate is really $0.21/loaded ton-mile, but since mileage is fixed per job, the Rates row
+    // just stores the pre-calculated $/ton for that job (mileage × $0.21) — same flat-rate
+    // mechanism as Amrize/Preferred, no new math needed here. Matching is fuzzy (normalized,
+    // either-contains-the-other) because OCR won't reproduce the P.O. text byte-for-byte the
+    // same way every time.
+    if (!t.rate_direct && (hint.includes('lattimore') || /\blmc\b/.test(hint))) {
+      const norm = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+      const dNorm = norm(t.deliver), cNorm = norm(t.po_number);
+      const lm = DB.rates.find(r => {
+        if (!r.active || !String(r.origin||'').toLowerCase().startsWith('lattimore')) return false;
+        const pn = norm(r.plant_name);
+        return pn && ((dNorm && (dNorm.includes(pn) || pn.includes(dNorm))) || (cNorm && (cNorm.includes(pn) || pn.includes(cNorm))));
+      });
+      if (lm) {
+        t.rate_direct = lm.rate_per_ton;
+        t.rate_match_label = `Lattimore → ${lm.plant_name} @ $${lm.rate_per_ton.toFixed(2)}/ton`;
+      }
+    }
+    if (!t.rate_direct && (hint.includes('resolve') || hint.includes('ravenna'))) {
+      const norm = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+      const poNorm = norm(t.deliver || t.po_number);
+      if (poNorm) {
+        const resolveMatch = DB.rates.find(r => {
+          if (!r.active || r.origin.toLowerCase() !== 'resolve: ravenna 2') return false;
+          const planNorm = norm(r.plant_name);
+          return planNorm && (poNorm.includes(planNorm) || planNorm.includes(poNorm));
+        });
+        if (resolveMatch) {
+          t.rate_direct = resolveMatch.rate_per_ton;
+          t.rate_match_label = `Ravenna 2 → ${resolveMatch.plant_name} @ $${resolveMatch.rate_per_ton.toFixed(2)}/ton`;
+        }
+      }
+    }
+  }
 }
 
 // Net/Tare/Gross row mix-up: the reader sometimes grabs the Tare (or Gross) row as the Net.
@@ -4001,7 +4012,75 @@ function computeDuplicateClusters() {
   return Object.values(groups).filter(g => new Set(g.map(t => String(t.ticket||'').replace(/\s/g,''))).size > 1);
 }
 
+// ─── Mis-tagged tickets: Axelar-tagged, dated this year, never matched to an Axelar settlement ───
+function axfixCandidates() {
+  const cy = new Date().getFullYear();
+  return (DB.tickets || []).filter(t => {
+    if ((t.business || 'axelar') === 'ea' || t.error || t.matched) return false;
+    const d = parseLocalDate(t.date);
+    return d && d.getFullYear() === cy;
+  }).sort((a, b) => (parseLocalDate(b.date) || 0) - (parseLocalDate(a.date) || 0));
+}
+function renderAxfixBanner() {
+  const el = document.getElementById('axelar-fix-banner');
+  if (!el) return;
+  const n = axfixCandidates().length;
+  if (!n) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.style.display = 'block';
+  el.innerHTML = `<div style="background:rgba(245,166,35,0.12);border:1px solid var(--amber);border-radius:10px;padding:10px 12px;margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+    <div style="flex:1;min-width:200px;font-size:13px;color:var(--amber);">⚠ <b>${n}</b> ticket${n === 1 ? '' : 's'} dated ${new Date().getFullYear()} ${n === 1 ? 'is' : 'are'} tagged <b>Axelar</b> and not matched to a settlement.</div>
+    <button class="btn btn-green" style="font-size:13px;padding:7px 12px;" onclick="openAxfixModal()">Review &amp; move to EA</button>
+  </div>`;
+}
+function openAxfixModal() {
+  const list = axfixCandidates();
+  document.getElementById('axfix-list').innerHTML = list.map((t, i) => `<label style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px solid var(--border);cursor:pointer;">
+    <input type="checkbox" class="axfix-cb" data-ticket="${String(t.ticket).replace(/"/g, '&quot;')}" checked onchange="axfixCount()" style="width:18px;height:18px;accent-color:var(--green);flex:0 0 auto;">
+    <div style="min-width:0;flex:1;"><div style="font-size:13px;"><b>${t.ticket || '—'}</b> · ${cleanDate(t.date) || '—'} · ${parseFloat(t.tons || 0).toFixed(2)} t</div>
+    <div style="font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(t.pickup || '—')} → ${(t.deliver || '—')}${t.driver ? ' · ' + t.driver : ''}</div></div></label>`).join('');
+  axfixCount();
+  document.getElementById('axfix-modal').style.display = 'flex';
+}
+function closeAxfixModal() { document.getElementById('axfix-modal').style.display = 'none'; }
+function axfixAll(on) { document.querySelectorAll('.axfix-cb').forEach(c => c.checked = on); axfixCount(); }
+function axfixCount() {
+  const n = document.querySelectorAll('.axfix-cb:checked').length;
+  document.getElementById('axfix-count').textContent = n + ' selected';
+  const go = document.getElementById('axfix-go'); if (go) go.disabled = n === 0;
+}
+async function axfixMove() {
+  const picked = new Set([...document.querySelectorAll('.axfix-cb:checked')].map(c => c.dataset.ticket));
+  const tickets = DB.tickets.filter(t => picked.has(String(t.ticket)) && (t.business || 'axelar') !== 'ea');
+  if (!tickets.length) return;
+  if (!confirm(`Move ${tickets.length} ticket${tickets.length === 1 ? '' : 's'} from Axelar to EA direct?\n\nThis changes which reports and payouts they appear in.`)) return;
+  closeAxfixModal();
+  showLoadingOverlay(`Moving ${tickets.length} ticket${tickets.length === 1 ? '' : 's'} to EA…`);
+  let rated = 0, noRate = 0, noDriver = 0, i = 0;
+  try {
+    for (const t of tickets) {
+      i++;
+      updateLoadingOverlay(`Moving ticket ${i} of ${tickets.length}…`);
+      t.business = 'ea';
+      if (!parseFloat(t.rate_direct || 0)) { autoMatchRate(t); }
+      if (parseFloat(t.rate_direct || 0)) rated++; else noRate++;
+      // These were tagged Axelar, so the scanner never matched a driver. Use the truck number on the ticket.
+      if (!t.driver && t.truck) {
+        const dm = (DB.drivers || []).find(d => d.active && d.truck_number && String(d.truck_number).toUpperCase() === String(t.truck).toUpperCase());
+        if (dm) t.driver = dm.name;
+      }
+      if (!t.driver) noDriver++;
+      save();
+      const cloudTicket = (t.photo_url && String(t.photo_url).startsWith('local:')) ? { ...t, photo_url: null } : t;
+      await gasPost({ action: 'saveTicket', ticket: cloudTicket });
+    }
+  } finally { hideLoadingOverlay(); }
+  save(); renderAll();
+  const todo = [noRate ? `${noRate} have no rate yet (add it in the Rates tab or edit the ticket)` : '', noDriver ? `${noDriver} have no driver yet (tap the driver icon on the ticket)` : ''].filter(Boolean);
+  showGlobalAlert(`✅ ${tickets.length} moved to EA direct.${todo.length ? ' ⚠ ' + todo.join('; ') + '.' : ''}`, todo.length ? 'err' : 'ok');
+}
+
 function renderTickets() {
+  renderAxfixBanner();
   let t = [...DB.tickets];
   if (tFilter === 'dupes') {
     const clusters = computeDuplicateClusters();
@@ -8588,6 +8667,23 @@ if ('serviceWorker' in navigator) {
   </div>
 </div>
 
+
+<div id="axfix-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;align-items:center;justify-content:center;padding:16px;">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px;width:100%;max-width:460px;max-height:88vh;display:flex;flex-direction:column;">
+    <div class="invoice-modal-title">🔀 Move tickets to EA direct</div>
+    <div style="font-size:12px;color:var(--text2);line-height:1.5;margin-bottom:8px;">These tickets are dated this year, tagged Axelar, and not matched to any Axelar settlement. Uncheck any that really are Axelar loads.</div>
+    <div style="display:flex;gap:8px;margin-bottom:8px;">
+      <button class="btn" style="font-size:12px;padding:5px 10px;" onclick="axfixAll(true)">Select all</button>
+      <button class="btn" style="font-size:12px;padding:5px 10px;" onclick="axfixAll(false)">Select none</button>
+      <span id="axfix-count" style="margin-left:auto;font-size:12px;color:var(--text2);align-self:center;"></span>
+    </div>
+    <div id="axfix-list" style="overflow-y:auto;flex:1;min-height:80px;border:1px solid var(--border);border-radius:8px;"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+      <button class="btn" onclick="closeAxfixModal()">Cancel</button>
+      <button class="btn btn-green" id="axfix-go" onclick="axfixMove()">✅ Move selected to EA</button>
+    </div>
+  </div>
+</div>
 
 <div id="lmc-job-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;align-items:center;justify-content:center;padding:16px;">
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;width:100%;max-width:420px;max-height:85vh;overflow-y:auto;">
